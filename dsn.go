@@ -13,6 +13,12 @@ func buildDSN(cfg *MySQLPluginConfig) string {
 		loc = defaultMySQLLoc
 	}
 
+	// 处理 timezone 加载错误，使用默认时区
+	location := time.Local
+	if l, err := time.LoadLocation(loc); err == nil {
+		location = l
+	}
+
 	dsnConfig := mysql.Config{
 		User:                 cfg.User,
 		Passwd:               cfg.Password,
@@ -20,7 +26,7 @@ func buildDSN(cfg *MySQLPluginConfig) string {
 		Addr:                 cfg.Addr,
 		DBName:               cfg.DBName,
 		ParseTime:            cfg.ParseTime,
-		Loc:                  func() *time.Location { l, _ := time.LoadLocation(loc); return l }(),
+		Loc:                  location,
 		AllowNativePasswords: true,
 	}
 	return dsnConfig.FormatDSN()

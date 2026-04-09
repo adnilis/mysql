@@ -47,6 +47,14 @@ func (p *MySQLPlugin) Query(ctx context.Context, query string, args ...interface
 func (p *MySQLPlugin) Table(tableName string) *MySQLQueryResult {
 	qr := acquireMySQLQueryResult()
 	qr.plugin = p
+	qr.ctx = context.Background()
+
+	// 验证表名安全性
+	if !isValidIdentifier(tableName) {
+		qr.err = ErrInvalidModel
+		return qr
+	}
+
 	var sb strings.Builder
 	sb.Grow(len(tableName) + 20)
 	sb.WriteString("SELECT * FROM ")
@@ -65,8 +73,17 @@ func (p *MySQLPlugin) Model(model IModel) *MySQLQueryResult {
 	}
 
 	tableName := model.TableName()
+
+	// 验证表名安全性
+	if !isValidIdentifier(tableName) {
+		qr := acquireMySQLQueryResult()
+		qr.err = ErrInvalidModel
+		return qr
+	}
+
 	qr := acquireMySQLQueryResult()
 	qr.plugin = p
+	qr.ctx = context.Background()
 	var sb strings.Builder
 	sb.Grow(len(tableName) + 20)
 	sb.WriteString("SELECT * FROM ")

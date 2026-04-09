@@ -299,6 +299,57 @@ ErrInvalidModel    // 无效的模型
 ErrDuplicateKey    // 重复键错误
 ```
 
+## 安全说明
+
+### SQL 注入防护
+
+插件对表名进行验证，只允许合法的 SQL 标识符（字母或下划线开头，后跟字母、数字或下划线）：
+
+```go
+// 安全的表名
+plugin.Table("users")     // ✓ 通过
+plugin.Table("user_orders") // ✓ 通过
+
+// 不安全的表名会被拒绝
+plugin.Table("users; DROP TABLE users;--") // ✗ 返回错误
+plugin.Table("users' OR '1'='1")           // ✗ 返回错误
+```
+
+### 参数化查询
+
+所有用户输入都使用参数化查询，避免 SQL 注入：
+
+```go
+// 参数会被正确转义
+plugin.Table("users").Where("name = ?", "'; DROP TABLE users;--")
+// 实际执行: SELECT * FROM users WHERE name = '...'
+```
+
+## 测试
+
+插件包含完整的单元测试和基准测试：
+
+```bash
+# 运行所有测试
+go test -v ./...
+
+# 运行基准测试
+go test -bench=. -benchmem ./...
+
+# 运行特定测试
+go test -v -run "TestQuery" ./...
+```
+
+测试使用 [go-sqlmock](https://github.com/DATA-DOG/go-sqlmock) 模拟数据库连接，无需真实数据库。
+
+## 性能特性
+
+- **连接池管理**：支持配置最大连接数、最小空闲连接数、连接生命周期等
+- **对象池复用**：QueryResult 对象使用 `sync.Pool` 复用，减少内存分配
+- **元数据缓存**：使用 `sync.Map` 缓存字段元数据，避免重复反射
+- **查询缓存**：相同查询结构只构建一次，结果被缓存
+- **字符串预分配**：使用 `strings.Builder` 预分配容量，减少动态分配
+
 错误可通过 `errors.Is()` 进行检查：
 
 ```go

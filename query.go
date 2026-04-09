@@ -372,9 +372,9 @@ func (qr *MySQLQueryResult) Update(column string, value interface{}) error {
 		return fmt.Errorf("update failed: %w", err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	// 忽略 RowsAffected 错误，因为某些驱动可能不支持
+	_, _ = result.RowsAffected()
 	_ = duration
-	_ = rowsAffected
 	return nil
 }
 
@@ -409,9 +409,9 @@ func (qr *MySQLQueryResult) Delete() error {
 		return fmt.Errorf("delete failed: %w", err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	// 忽略 RowsAffected 错误，因为某些驱动可能不支持
+	_, _ = result.RowsAffected()
 	_ = duration
-	_ = rowsAffected
 	return nil
 }
 

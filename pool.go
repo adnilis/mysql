@@ -87,12 +87,14 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 	p.state = mysqlPluginStateRunning
 
 	// 监听上下文取消信号
-	go func() {
+	// 注意：stopOnce 是线程安全的，但需要确保在 Stop() 之前不会被访问
+	stopOnce := &p.stopOnce
+	go func(stopOnce *sync.Once) {
 		<-ctx.Done()
-		p.stopOnce.Do(func() {
+		stopOnce.Do(func() {
 			close(p.stopCh)
 		})
-	}()
+	}(stopOnce)
 
 	logger.Info("[MySQL] connected to %s/%s", p.config.Addr, p.config.DBName)
 	return nil
@@ -100,12 +102,17 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 
 // Stop 停止插件，关闭数据库连接
 func (p *MySQLPlugin) Stop(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// 初始化 stopCh 如果尚未初始化（防御性编程）
+	if p.stopCh == nil {
+		p.stopCh = make(chan struct{})
+	}
+
 	p.stopOnce.Do(func() {
 		close(p.stopCh)
 	})
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.db != nil {
 		if err := p.db.Close(); err != nil {

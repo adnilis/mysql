@@ -20,16 +20,20 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 	totalArgs := len(qr.args) + len(qr.joins)*3 + len(qr.wheres)*2 + len(qr.havings)*2
 	allArgs := make([]interface{}, 0, totalArgs)
 
+	// 缓存 ToUpper 结果，避免重复转换
+	queryUpper := strings.ToUpper(query)
+
 	// 添加 JOIN 子句
 	if len(qr.joins) > 0 {
-		queryUpper := strings.ToUpper(query)
 		fromPos := strings.Index(queryUpper, " "+sqlFrom+" ")
 		if fromPos >= 0 {
 			insertPos := fromPos + len(" "+sqlFrom+" ")
 
-			// 寻找正确的插入位置
+			// 寻找正确的插入位置 - 寻找 FROM 关键字之后第一个空格的下一个字符
+			// 然后检查后续内容是否是关键字
+			foundKeyword := false
 			for i := fromPos + len(sqlFrom); i < len(query); i++ {
-				if query[i] == ' ' || query[i] == ',' {
+				if query[i] == ' ' {
 					remaining := strings.ToUpper(strings.TrimSpace(query[i+1:]))
 					if strings.HasPrefix(remaining, sqlWhere) ||
 						strings.HasPrefix(remaining, sqlGroupBy) ||
@@ -37,8 +41,26 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 						strings.HasPrefix(remaining, sqlLimit) ||
 						strings.HasPrefix(remaining, sqlHaving) {
 						insertPos = i + 1
+						foundKeyword = true
 						break
 					}
+				}
+			}
+
+			// 如果没有找到关键字插入点，说明表名后没有关键字，insertPos 应该指向表名之后
+			// 寻找表名结束的位置
+			if !foundKeyword {
+				foundSpace := false
+				for i := insertPos; i < len(query); i++ {
+					if query[i] == ' ' {
+						insertPos = i
+						foundSpace = true
+						break
+					}
+				}
+				// 如果没有找到空格（表名在字符串末尾），insertPos 指向字符串末尾
+				if !foundSpace {
+					insertPos = len(query)
 				}
 			}
 
@@ -63,12 +85,31 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 WHERE 子句
 	if len(qr.wheres) > 0 {
-		queryUpper := strings.ToUpper(query)
 		wherePos := strings.Index(queryUpper, " "+sqlWhere+" ")
 		if wherePos < 0 {
 			fromPos := strings.Index(queryUpper, " "+sqlFrom+" ")
 			if fromPos >= 0 {
-				wherePos = fromPos + len(" "+sqlFrom+" ")
+				// fromPos 指向 " FROM " 的起始位置
+				// 需要找到表名结束的位置，即第一个空白或关键字的位置
+				searchStart := fromPos + len(" "+sqlFrom+" ")
+				// 寻找 WHERE/GROUP/ORDER/LIMIT 或字符串末尾
+				foundPos := len(query)
+				for i := searchStart; i < len(query); i++ {
+					if query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r' {
+						// 检查后续内容是否是关键字
+						remaining := strings.ToUpper(query[i:])
+						if strings.HasPrefix(remaining, sqlWhere) ||
+							strings.HasPrefix(remaining, sqlGroupBy) ||
+							strings.HasPrefix(remaining, sqlOrderBy) ||
+							strings.HasPrefix(remaining, sqlLimit) ||
+							strings.HasPrefix(remaining, sqlHaving) ||
+							strings.HasPrefix(remaining, sqlOffset) {
+							foundPos = i
+							break
+						}
+					}
+				}
+				wherePos = foundPos
 			} else {
 				wherePos = len(query)
 			}
@@ -91,7 +132,6 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 GROUP BY 子句
 	if len(qr.groups) > 0 {
-		queryUpper := strings.ToUpper(query)
 		groupPos := strings.Index(queryUpper, " "+sqlGroupBy+" ")
 		if groupPos < 0 {
 			groupPos = strings.Index(queryUpper, " "+sqlOrderBy+" ")
@@ -109,7 +149,6 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 HAVING 子句
 	if len(qr.havings) > 0 {
-		queryUpper := strings.ToUpper(query)
 		havingPos := strings.Index(queryUpper, " "+sqlHaving+" ")
 		if havingPos < 0 {
 			havingPos = strings.Index(queryUpper, " "+sqlOrderBy+" ")
@@ -138,7 +177,6 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 ORDER BY 子句
 	if len(qr.orders) > 0 {
-		queryUpper := strings.ToUpper(query)
 		orderPos := strings.Index(queryUpper, " "+sqlOrderBy+" ")
 		if orderPos < 0 {
 			orderPos = strings.Index(queryUpper, " "+sqlLimit+" ")
@@ -153,7 +191,6 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 LIMIT 子句
 	if qr.limit > 0 {
-		queryUpper := strings.ToUpper(query)
 		limitPos := strings.Index(queryUpper, " "+sqlLimit+" ")
 		if limitPos < 0 {
 			limitPos = len(query)
@@ -163,7 +200,6 @@ func (qr *MySQLQueryResult) buildQuery() (string, []interface{}) {
 
 	// 添加 OFFSET 子句
 	if qr.offset > 0 {
-		queryUpper := strings.ToUpper(query)
 		offsetPos := strings.Index(queryUpper, " "+sqlOffset+" ")
 		if offsetPos < 0 {
 			offsetPos = strings.Index(queryUpper, " "+sqlLimit+" ")

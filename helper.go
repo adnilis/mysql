@@ -2,8 +2,32 @@ package plugins
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 )
+
+// SQL 标识符验证正则
+// 合法的 SQL 标识符：字母或下划线开头，后跟字母、数字或下划线
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// isValidIdentifier 验证 SQL 标识符是否安全
+// 标识符只能是字母、数字和下划线，不能包含特殊字符或 SQL 关键字
+func isValidIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	return validIdentifier.MatchString(name)
+}
+
+// sanitizeIdentifier 清理 SQL 标识符
+// 如果标识符无效，返回空字符串（调用方应该拒绝使用）
+func sanitizeIdentifier(name string) string {
+	name = strings.TrimSpace(name)
+	if !isValidIdentifier(name) {
+		return ""
+	}
+	return name
+}
 
 // getTableNameFromDest 从目标类型推断表名
 // 支持的类型：
