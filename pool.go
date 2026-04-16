@@ -9,6 +9,15 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// mysqlLoggerConfig 适配器：让 MySQLPluginConfig 实现 QueryLoggerConfig 接口
+type mysqlLoggerConfig struct {
+	debug         bool
+	slowThreshold int64
+}
+
+func (c *mysqlLoggerConfig) Debug() bool         { return c.debug }
+func (c *mysqlLoggerConfig) SlowThreshold() int64 { return c.slowThreshold }
+
 // mysqlQueryResultPool QueryResult 对象池
 // 使用 sync.Pool 复用 QueryResult 对象，减少内存分配
 var mysqlQueryResultPool = sync.Pool{
@@ -83,6 +92,13 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 		p.db.Close()
 		return fmt.Errorf("mysql ping failed: %w", err)
 	}
+
+	// 初始化查询日志记录器
+	loggerConfig := &mysqlLoggerConfig{
+		debug:         p.config.Debug,
+		slowThreshold: p.config.SlowThreshold,
+	}
+	p.queryLogger = NewQueryLogger(loggerConfig)
 
 	p.state = mysqlPluginStateRunning
 

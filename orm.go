@@ -114,15 +114,17 @@ func (p *MySQLPlugin) Insert(ctx context.Context, model IModel) (int64, error) {
 	duration := time.Since(start)
 
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "insert", err)
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "insert", fmt.Errorf("failed to get last insert id: %w", err))
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "INSERT", scanner.table, duration, 1, query, values...)
 	return id, nil
 }
 
@@ -152,15 +154,17 @@ func (p *MySQLPlugin) Update(ctx context.Context, model IModel, where string, ar
 	duration := time.Since(start)
 
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "update", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "update", fmt.Errorf("failed to get rows affected: %w", err))
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "UPDATE", scanner.table, duration, rowsAffected, query, values...)
 	return rowsAffected, nil
 }
 
@@ -187,15 +191,17 @@ func (p *MySQLPlugin) Delete(ctx context.Context, model IModel, where string, ar
 	duration := time.Since(start)
 
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "delete", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "delete", fmt.Errorf("failed to get rows affected: %w", err))
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "DELETE", scanner.table, duration, rowsAffected, query, values...)
 	return rowsAffected, nil
 }
 
@@ -218,16 +224,16 @@ func (p *MySQLPlugin) GetByID(ctx context.Context, model IModel, id interface{})
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, ErrModelNotFound, id)
 		return wrapMySQLError(scanner.table, "select", ErrModelNotFound)
 	}
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, id)
 		return wrapMySQLError(scanner.table, "select", err)
 	}
 
-	_ = duration
+	p.queryLogger.LogQuery(ctx, query, duration, 1, id)
 	return nil
 }
 
@@ -253,17 +259,17 @@ func (p *MySQLPlugin) UpdateByID(ctx context.Context, model IModel, id interface
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "update", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
 		return 0, wrapMySQLError(scanner.table, "update", fmt.Errorf("failed to get rows affected: %w", err))
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "UPDATE", scanner.table, duration, rowsAffected, query, values...)
 	return rowsAffected, nil
 }
 
@@ -286,17 +292,17 @@ func (p *MySQLPlugin) DeleteByID(ctx context.Context, model IModel, id interface
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, id)
 		return 0, wrapMySQLError(scanner.table, "delete", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, id)
 		return 0, wrapMySQLError(scanner.table, "delete", fmt.Errorf("failed to get rows affected: %w", err))
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "DELETE", scanner.table, duration, rowsAffected, query, id)
 	return rowsAffected, nil
 }
 
@@ -316,11 +322,11 @@ func (p *MySQLPlugin) Select(ctx context.Context, dest interface{}, query string
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, args...)
 		return fmt.Errorf("select failed: %w", err)
 	}
 
-	_ = duration
+	p.queryLogger.LogQuery(ctx, query, duration, 0, args...)
 	return nil
 }
 
@@ -341,16 +347,16 @@ func (p *MySQLPlugin) Get(ctx context.Context, dest interface{}, query string, a
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, ErrModelNotFound, args...)
 		return ErrModelNotFound
 	}
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, args...)
 		return fmt.Errorf("get failed: %w", err)
 	}
 
-	_ = duration
+	p.queryLogger.LogQuery(ctx, query, duration, 1, args...)
 	return nil
 }
 
@@ -383,6 +389,37 @@ func (p *MySQLPlugin) Exec(ctx context.Context, query string, args ...interface{
 
 	_ = duration
 	return rowsAffected, nil
+}
+
+// ExecReturningID 执行 INSERT 语句并返回插入的 ID
+// 用于执行 INSERT 语句后需要获取自增主键的场景
+// 返回插入记录的 ID
+func (p *MySQLPlugin) ExecReturningID(ctx context.Context, query string, args ...interface{}) (int64, error) {
+	p.mu.RLock()
+	db := p.db
+	p.mu.RUnlock()
+
+	if db == nil {
+		return 0, ErrMySQLNotEnabled
+	}
+
+	start := time.Now()
+	result, err := db.ExecContext(ctx, query, args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		_ = duration
+		return 0, fmt.Errorf("exec returning id failed: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		_ = duration
+		return 0, fmt.Errorf("failed to get last insert id: %w", err)
+	}
+
+	_ = duration
+	return id, nil
 }
 
 // Count 计数

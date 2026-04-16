@@ -106,14 +106,14 @@ func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch 
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, valueArgs...)
 		return nil, wrapMySQLError(scanner.table, "batch insert", err)
 	}
 
 	// 获取插入的 ID
 	lastID, err := result.LastInsertId()
 	if err != nil {
-		_ = duration
+		p.queryLogger.LogError(ctx, query, duration, err, valueArgs...)
 		return nil, wrapMySQLError(scanner.table, "batch insert", fmt.Errorf("failed to get last insert id: %w", err))
 	}
 
@@ -123,6 +123,6 @@ func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch 
 		ids[i] = lastID + int64(i)
 	}
 
-	_ = duration
+	p.queryLogger.LogOperation(ctx, "BATCH_INSERT", scanner.table, duration, int64(len(batch)), query, valueArgs...)
 	return ids, nil
 }

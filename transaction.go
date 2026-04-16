@@ -22,10 +22,11 @@ func (t *MySQLTransaction) Commit() error {
 	duration := time.Since(start)
 
 	if err != nil {
+		t.plugin.queryLogger.LogError(context.Background(), "COMMIT", duration, err)
 		return fmt.Errorf("commit failed: %w", err)
 	}
 
-	_ = duration
+	t.plugin.queryLogger.LogTransaction(context.Background(), "COMMIT", duration)
 	return nil
 }
 
@@ -36,25 +37,56 @@ func (t *MySQLTransaction) Rollback() error {
 	duration := time.Since(start)
 
 	if err != nil && err != sql.ErrTxDone {
-		_ = duration
+		t.plugin.queryLogger.LogError(context.Background(), "ROLLBACK", duration, err)
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
-	_ = duration
+	t.plugin.queryLogger.LogTransaction(context.Background(), "ROLLBACK", duration)
 	return nil
 }
 
 // Get 在事务中执行单行查询
 func (t *MySQLTransaction) Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	return t.tx.GetContext(ctx, dest, query, args...)
+	start := time.Now()
+	err := t.tx.GetContext(ctx, dest, query, args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.plugin.queryLogger.LogError(ctx, query, duration, err, args...)
+		return err
+	}
+
+	t.plugin.queryLogger.LogQuery(ctx, query, duration, 1, args...)
+	return nil
 }
 
 // Select 在事务中执行多行查询
 func (t *MySQLTransaction) Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	return t.tx.SelectContext(ctx, dest, query, args...)
+	start := time.Now()
+	err := t.tx.SelectContext(ctx, dest, query, args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.plugin.queryLogger.LogError(ctx, query, duration, err, args...)
+		return err
+	}
+
+	t.plugin.queryLogger.LogQuery(ctx, query, duration, 0, args...)
+	return nil
 }
 
 // Exec 在事务中执行 SQL 语句
 func (t *MySQLTransaction) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return t.tx.ExecContext(ctx, query, args...)
+	start := time.Now()
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.plugin.queryLogger.LogError(ctx, query, duration, err, args...)
+		return nil, err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	t.plugin.queryLogger.LogOperation(ctx, "EXEC", "", duration, rowsAffected, query, args...)
+	return result, nil
 }

@@ -11,14 +11,15 @@ import (
 
 // MySQLPlugin 是 WMA 框架的 MySQL 插件实现
 type MySQLPlugin struct {
-	mu       sync.RWMutex       // 读写锁，保证并发安全
-	name     string             // 插件名称
-	config   MySQLPluginConfig  // 插件配置
-	app      *wma.App           // WMA 应用实例
-	db       *sqlx.DB           // sqlx 数据库连接
-	stopCh   chan struct{}       // 停止通道
-	stopOnce sync.Once          // 确保停止操作只执行一次
-	state    mysqlPluginState   // 插件状态
+	mu          sync.RWMutex       // 读写锁，保证并发安全
+	name        string             // 插件名称
+	config      MySQLPluginConfig  // 插件配置
+	app         *wma.App           // WMA 应用实例
+	db          *sqlx.DB           // sqlx 数据库连接
+	stopCh      chan struct{}       // 停止通道
+	stopOnce    sync.Once          // 确保停止操作只执行一次
+	state       mysqlPluginState   // 插件状态
+	queryLogger *QueryLogger       // 查询日志记录器
 }
 
 // mysqlPluginState 插件状态枚举

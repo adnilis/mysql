@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -243,16 +244,16 @@ func (qr *MySQLQueryResult) First(dest interface{}) error {
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return ErrModelNotFound
 	}
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return fmt.Errorf("query first failed: %w", err)
 	}
 
-	_ = duration
+	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, 1, args...)
 	return nil
 }
 
@@ -278,11 +279,12 @@ func (qr *MySQLQueryResult) Find(dest interface{}) error {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return fmt.Errorf("query find failed: %w", err)
 	}
 
-	_ = duration
+	rows := int64(reflect.ValueOf(dest).Elem().Len())
+	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, rows, args...)
 	return nil
 }
 
@@ -314,11 +316,11 @@ func (qr *MySQLQueryResult) Count(count *int64) error {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, countQuery, duration, err)
 		return fmt.Errorf("count failed: %w", err)
 	}
 
-	_ = duration
+	qr.plugin.queryLogger.LogQuery(qr.ctx, countQuery, duration, 1)
 	return nil
 }
 
@@ -368,13 +370,12 @@ func (qr *MySQLQueryResult) Update(column string, value interface{}) error {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, newArgs...)
 		return fmt.Errorf("update failed: %w", err)
 	}
 
-	// 忽略 RowsAffected 错误，因为某些驱动可能不支持
-	_, _ = result.RowsAffected()
-	_ = duration
+	rowsAffected, _ := result.RowsAffected()
+	qr.plugin.queryLogger.LogOperation(qr.ctx, "UPDATE", "", duration, rowsAffected, query, newArgs...)
 	return nil
 }
 
@@ -405,13 +406,12 @@ func (qr *MySQLQueryResult) Delete() error {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return fmt.Errorf("delete failed: %w", err)
 	}
 
-	// 忽略 RowsAffected 错误，因为某些驱动可能不支持
-	_, _ = result.RowsAffected()
-	_ = duration
+	rowsAffected, _ := result.RowsAffected()
+	qr.plugin.queryLogger.LogOperation(qr.ctx, "DELETE", "", duration, rowsAffected, query, args...)
 	return nil
 }
 
@@ -438,11 +438,12 @@ func (qr *MySQLQueryResult) Exec() (sql.Result, error) {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return nil, fmt.Errorf("exec failed: %w", err)
 	}
 
-	_ = duration
+	rowsAffected, _ := result.RowsAffected()
+	qr.plugin.queryLogger.LogOperation(qr.ctx, "EXEC", "", duration, rowsAffected, query, args...)
 	return result, nil
 }
 
@@ -496,16 +497,16 @@ func (qr *MySQLQueryResult) Take(dest interface{}) error {
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return ErrModelNotFound
 	}
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
 		return fmt.Errorf("query take failed: %w", err)
 	}
 
-	_ = duration
+	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, 1, args...)
 	return nil
 }
 
@@ -545,10 +546,10 @@ func (qr *MySQLQueryResult) Pluck(field string, dest interface{}) error {
 	duration := time.Since(start)
 
 	if err != nil {
-		_ = duration
+		qr.plugin.queryLogger.LogError(qr.ctx, qr.query, duration, err, args...)
 		return fmt.Errorf("pluck failed: %w", err)
 	}
 
-	_ = duration
+	qr.plugin.queryLogger.LogQuery(qr.ctx, qr.query, duration, 0, args...)
 	return nil
 }
