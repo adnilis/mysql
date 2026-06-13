@@ -9,7 +9,14 @@ import (
 	"github.com/adnilis/logger"
 )
 
-// QueryLogger SQL查询日志记录器
+// QueryLoggerConfig 查询日志配置接口
+// 放在 logger.go 而非 config.go 以保持与 QueryLogger 的内聚
+type QueryLoggerConfig interface {
+	EnableQueryLog() bool
+	SlowThreshold() int64
+}
+
+// QueryLogger SQL 查询日志记录器
 type QueryLogger struct {
 	config      QueryLoggerConfig
 	enabled     bool
@@ -17,18 +24,21 @@ type QueryLogger struct {
 }
 
 // NewQueryLogger 创建查询日志记录器
+// 传入 nil 时返回 nil（所有方法均接受 nil 接收者并安全退化为 no-op）
 func NewQueryLogger(config QueryLoggerConfig) *QueryLogger {
-	ql := &QueryLogger{
+	if config == nil {
+		return nil
+	}
+	return &QueryLogger{
 		config:      config,
-		enabled:     config.Debug(),
+		enabled:     config.EnableQueryLog(),
 		slowEnabled: config.SlowThreshold() > 0,
 	}
-	return ql
 }
 
-// IsEnabled 检查日志是否启用
+// IsEnabled 检查日志是否启用（含 nil 接收者保护）
 func (ql *QueryLogger) IsEnabled() bool {
-	return ql.enabled
+	return ql != nil && ql.enabled
 }
 
 // shouldLog 判断是否应该记录日志
@@ -36,9 +46,10 @@ func (ql *QueryLogger) shouldLog() bool {
 	return ql != nil && ql.enabled
 }
 
-// LogQuery 记录普通查询日志
+// LogQuery 记录 SQL 查询日志（统一入口，覆盖原 LogQuery 与 LogOperation）
 // 格式: [12.345ms] [rows:1] SELECT * FROM `users` WHERE `id` = 1
-func (ql *QueryLogger) LogQuery(ctx context.Context, query string, duration time.Duration, rowsAffected int64, args ...interface{}) {
+// 调用方为 INSERT/UPDATE/DELETE/EXEC 等操作时，可在 query 前手动加 "[INSERT] " 等前缀
+func (ql *QueryLogger) LogQuery(ctx context.Context, query string, duration time.Duration, rowsAffected int64, args ...any) {
 	if !ql.shouldLog() {
 		return
 	}
@@ -50,7 +61,7 @@ func (ql *QueryLogger) LogQuery(ctx context.Context, query string, duration time
 
 // LogSlowQuery 记录慢查询日志
 // 格式: [SLOW 250.789ms] [rows:0] SELECT * FROM `orders` WHERE `status` = 'pending'
-func (ql *QueryLogger) LogSlowQuery(ctx context.Context, query string, duration time.Duration, rowsAffected int64, args ...interface{}) {
+func (ql *QueryLogger) LogSlowQuery(ctx context.Context, query string, duration time.Duration, rowsAffected int64, args ...any) {
 	if ql == nil || !ql.slowEnabled {
 		return
 	}
@@ -63,10 +74,10 @@ func (ql *QueryLogger) LogSlowQuery(ctx context.Context, query string, duration 
 	}
 }
 
-// LogError 记录错误日志
-// 格式: [ERROR 5.123ms] [rows:0] INSERT INTO `users` (`name`) VALUES (?)
+// LogError 记录错误日志（对 nil logger 与 nil err 都安全）
+// 格式: [ERROR 5.123ms] INSERT INTO `users` (`name`) VALUES (?)
 // Error: Duplicate entry 'John' for key 'idx_name'
-func (ql *QueryLogger) LogError(ctx context.Context, query string, duration time.Duration, err error, args ...interface{}) {
+func (ql *QueryLogger) LogError(ctx context.Context, query string, duration time.Duration, err error, args ...any) {
 	if ql == nil || err == nil {
 		return
 	}
@@ -77,20 +88,8 @@ func (ql *QueryLogger) LogError(ctx context.Context, query string, duration time
 		durationStr, formattedQuery, err)
 }
 
-// LogOperation 记录数据库操作（insert/update/delete）
-// 格式: [8.456ms] [rows:5] INSERT INTO `items` (`rid`, `item_id`, `num`) VALUES (1, 1001, 10)
-func (ql *QueryLogger) LogOperation(ctx context.Context, operation string, table string, duration time.Duration, rowsAffected int64, query string, args ...interface{}) {
-	if !ql.shouldLog() {
-		return
-	}
-
-	formattedQuery := ql.formatQuery(query, args...)
-	durationStr := formatDuration(duration)
-	logger.Debug("%s [rows:%d] %s", durationStr, rowsAffected, formattedQuery)
-}
-
-// LogTransaction 记录事务操作
-// 格式: [BEGIN] [0.123ms]
+// LogTransaction 记录事务操作（COMMIT / ROLLBACK / BEGIN）
+// 格式: [COMMIT] [0.123ms]
 func (ql *QueryLogger) LogTransaction(ctx context.Context, operation string, duration time.Duration) {
 	if !ql.shouldLog() {
 		return
@@ -100,15 +99,20 @@ func (ql *QueryLogger) LogTransaction(ctx context.Context, operation string, dur
 	logger.Info("[%s] %s", operation, durationStr)
 }
 
-// formatDuration 格式化持续时间，类似GORM
+// formatDuration 格式化持续时间，类似 GORM
 // 格式: [12.345ms]
 func formatDuration(duration time.Duration) string {
 	ms := float64(duration.Nanoseconds()) / 1e6
 	return fmt.Sprintf("[%.3fms]", ms)
 }
 
-// formatQuery 格式化SQL查询（替换参数占位符）
-func (ql *QueryLogger) formatQuery(query string, args ...interface{}) string {
+// formatQuery 格式化 SQL 查询（替换参数占位符）
+// 注意：本函数仅供调试日志使用，是"尽力而为"的格式化：
+//   - `?` 占位符替换是朴素的字符串扫描，无法识别字符串字面量内的 `?`
+//     （例如 `WHERE name = '?'` 会被错误替换）
+//   - 同样无法识别注释、子查询深嵌套等复杂情形
+// 不要用本函数的输出做安全审计或 SQL 解析。
+func (ql *QueryLogger) formatQuery(query string, args ...any) string {
 	if len(args) == 0 {
 		return formatTableNames(query)
 	}
@@ -119,7 +123,7 @@ func (ql *QueryLogger) formatQuery(query string, args ...interface{}) string {
 		argStrs[i] = formatArg(arg)
 	}
 
-	// 替换占位符（简单实现）
+	// 替换占位符（朴素实现，详见函数注释）
 	formatted := query
 	for _, arg := range argStrs {
 		idx := strings.Index(formatted, "?")
@@ -130,50 +134,22 @@ func (ql *QueryLogger) formatQuery(query string, args ...interface{}) string {
 	}
 
 	// 格式化表名，添加反引号
-	formatted = formatTableNames(formatted)
-
-	return formatted
+	return formatTableNames(formatted)
 }
 
-// formatTableNames 格式化SQL中的表名，添加反引号
+// formatTableNames 给 SQL 中常见关键字（FROM/JOIN/INTO/UPDATE/TABLE）后的表名加反引号
+// 简化版本：直接对每个关键字调用 addBackticksAfterKeyword，由其中的"已加反引号则跳过"逻辑做幂等保护
 func formatTableNames(query string) string {
-	// 简单的表名识别和格式化
-	// 匹配 FROM, JOIN, INTO, UPDATE, TABLE 等关键字后的表名
-	patterns := []struct {
-		keyword string
-		prefix  string
-	}{
-		{"\nFROM (", "\nFROM ("},
-		{" FROM (", " FROM ("},
-		{"\nFROM `", "\nFROM `"},
-		{" FROM `", " FROM `"},
-		{"\nJOIN (", "\nJOIN ("},
-		{" JOIN (", " JOIN ("},
-		{"\nJOIN `", "\nJOIN `"},
-		{" JOIN `", " JOIN `"},
-		{" INTO `", " INTO `"},
-		{" UPDATE `", " UPDATE `"},
-		{" TABLE `", " TABLE `"},
-	}
-
-	queryUpper := strings.ToUpper(query)
-	for _, pat := range patterns {
-		if strings.Contains(query, pat.prefix) || strings.Contains(queryUpper, strings.ToUpper(pat.prefix)) {
-			// 已经有反引号，跳过
-			return query
-		}
-	}
-
-	// 简单的替换：在每个关键字后的第一个标识符周围添加反引号
 	keywords := []string{"FROM", "JOIN", "INTO", "UPDATE", "TABLE"}
 	result := query
-	for _, keyword := range keywords {
-		result = addBackticksAfterKeyword(result, keyword)
+	for _, kw := range keywords {
+		result = addBackticksAfterKeyword(result, kw)
 	}
 	return result
 }
 
 // addBackticksAfterKeyword 在关键字后的表名添加反引号
+// 如果标识符已是反引号包裹或是子查询 "("，则跳过
 func addBackticksAfterKeyword(query, keyword string) string {
 	keywordUpper := strings.ToUpper(keyword)
 	queryUpper := strings.ToUpper(query)
@@ -200,6 +176,10 @@ func addBackticksAfterKeyword(query, keyword string) string {
 
 		// 查找关键字后的第一个标识符
 		identPos := keywordPos + len(keyword)
+		// 与 findIdentifierEnd 一致地跳过前导空白，避免反引号包到空格里
+		for identPos < len(query) && (query[identPos] == ' ' || query[identPos] == '\t' || query[identPos] == '\n') {
+			identPos++
+		}
 		identEnd := findIdentifierEnd(query, identPos)
 		if identEnd == -1 {
 			pos = identPos
@@ -232,7 +212,7 @@ func addBackticksAfterKeyword(query, keyword string) string {
 	return result
 }
 
-// isSQLKeywordBoundary 检查是否是SQL关键字边界
+// isSQLKeywordBoundary 检查是否是 SQL 关键字边界
 func isSQLKeywordBoundary(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '(' || c == ')' || c == ','
 }
@@ -270,8 +250,8 @@ func findIdentifierEnd(query string, start int) int {
 	return end
 }
 
-// formatArg 格式化参数值
-func formatArg(arg interface{}) string {
+// formatArg 格式化参数值（仅用于日志展示）
+func formatArg(arg any) string {
 	if arg == nil {
 		return "NULL"
 	}
@@ -285,17 +265,12 @@ func formatArg(arg interface{}) string {
 		return fmt.Sprintf("0x%x", v)
 	case time.Time:
 		return "'" + v.Format("2006-01-02 15:04:05") + "'"
+	case bool:
+		if v {
+			return "TRUE"
+		}
+		return "FALSE"
 	default:
 		return fmt.Sprintf("%v", arg)
 	}
-}
-
-// getContextInfo 获取上下文信息（可用于跟踪请求链路）
-func getContextInfo(ctx context.Context) string {
-	// 可以从context中提取跟踪ID等信息
-	// 这里返回key-value对用于调试
-	if ctx == nil {
-		return "none"
-	}
-	return fmt.Sprintf("%p", ctx) // 简单返回context指针地址
 }

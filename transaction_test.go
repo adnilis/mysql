@@ -19,7 +19,7 @@ func TestTransactionCommit(t *testing.T) {
 		t.Fatalf("failed to begin: %v", err)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("failed to commit: %v", err)
 	}
 
@@ -40,7 +40,7 @@ func TestTransactionRollback(t *testing.T) {
 		t.Fatalf("failed to begin: %v", err)
 	}
 
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("failed to rollback: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestTransactionQuery(t *testing.T) {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("failed to commit: %v", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestTransactionExec(t *testing.T) {
 		t.Fatalf("exec failed: %v", err)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("failed to commit: %v", err)
 	}
 }
@@ -123,12 +123,12 @@ func TestTransactionRollbackDone(t *testing.T) {
 	}
 
 	// First rollback should succeed
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("first rollback failed: %v", err)
 	}
 
 	// Second rollback should be idempotent (ErrTxDone is ignored, so no error)
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Rollback(context.Background()); err != nil {
 		t.Errorf("second rollback should not return error, got: %v", err)
 	}
 }
@@ -146,12 +146,12 @@ func TestTransactionCommitDone(t *testing.T) {
 	}
 
 	// Rollback first
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("rollback failed: %v", err)
 	}
 
 	// Commit after rollback should fail
-	if err := tx.Commit(); err == nil {
+	if err := tx.Commit(context.Background()); err == nil {
 		t.Error("expected error on commit after rollback")
 	}
 }

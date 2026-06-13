@@ -17,9 +17,9 @@ func newBenchPlugin(b *testing.B) (*MySQLPlugin, sqlmock.Sqlmock) {
 	plugin := &MySQLPlugin{
 		name:   "bench-mysql",
 		config: newTestConfig(),
-		db:     sqlx.NewDb(db, "mysql"),
 		state:  mysqlPluginStateRunning,
 	}
+	plugin.db.Store(sqlx.NewDb(db, "mysql"))
 	return plugin, mock
 }
 
@@ -141,5 +141,74 @@ func BenchmarkFieldScannerMetaCache(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		scanner := newFieldScanner(model)
 		_, _, _ = scanner.buildInsertSQL()
+	}
+}
+
+// BenchmarkInsertSQLBuild measures Insert SQL template lookup
+func BenchmarkInsertSQLBuild(b *testing.B) {
+	model := &testModel{ID: 1, Name: "test"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scanner := newFieldScanner(model)
+		_, _, _ = scanner.buildInsertSQL()
+	}
+}
+
+// BenchmarkUpdateByIDSQLBuild measures UpdateByID SQL template lookup
+func BenchmarkUpdateByIDSQLBuild(b *testing.B) {
+	model := &testModel{ID: 1, Name: "test"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scanner := newFieldScanner(model)
+		_, _, _ = scanner.buildUpdateByIDSQL(1)
+	}
+}
+
+// BenchmarkGetDBParallel measures concurrent getDB() throughput after the
+// atomic.Pointer[sqlx.DB] switch. RWMutex-based version contended under
+// parallel load; atomic.Load scales linearly with CPU.
+func BenchmarkGetDBParallel(b *testing.B) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		b.Fatalf("failed to create mock: %v", err)
+	}
+	plugin := &MySQLPlugin{
+		name:  "bench-mysql",
+		state: mysqlPluginStateRunning,
+	}
+	plugin.db.Store(sqlx.NewDb(db, "mysql"))
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := plugin.getDB(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkFormatQuery measures the SQL log formatter throughput.
+// Pre-optimization: 5x strings.ToUpper(query) + N string concatenations.
+// Post-optimization: 1x ToUpper + single-pass strings.Builder.
+func BenchmarkFormatQuery(b *testing.B) {
+	ql := NewQueryLogger(&fakeLoggerConfig{enabled: true})
+	query := "SELECT id, name FROM users INNER JOIN orders ON users.id = orders.user_id WHERE age > ? AND status = ? AND city = ?"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ql.formatQuery(query, 18, "active", "Beijing")
+	}
+}
+
+// BenchmarkFormatTableNames isolates the backtick-injection cost.
+func BenchmarkFormatTableNames(b *testing.B) {
+	query := "SELECT id, name FROM users INNER JOIN orders ON users.id = orders.user_id WHERE age > 18"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = formatTableNames(query)
 	}
 }

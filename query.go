@@ -15,7 +15,7 @@ type MySQLQueryResult struct {
 	plugin  *MySQLPlugin    // 所属插件
 	ctx     context.Context // 上下文
 	query   string          // 查询语句
-	args    []interface{}   // 查询参数
+	args    []any           // 查询参数
 	joins   []joinClause    // JOIN 子句
 	wheres  []whereClause   // WHERE 子句
 	groups  []string        // GROUP BY 子句
@@ -25,34 +25,33 @@ type MySQLQueryResult struct {
 	offset  int             // OFFSET
 	err     error           // 错误信息
 	// 缓存已构建的查询，避免重复构建
-	preQuery string        // 缓存的查询语句
-	preArgs  []interface{} // 缓存的参数列表
-	dirty    bool          // 是否需要重新构建
+	preQuery string // 缓存的查询语句
+	preArgs  []any  // 缓存的参数列表
+	dirty    bool   // 是否需要重新构建
 }
 
 // joinClause JOIN 子句结构
 type joinClause struct {
-	joinType string        // JOIN 类型：INNER、LEFT、RIGHT、FULL
-	table    string        // 表名
-	on       string        // ON 条件
-	args     []interface{} // ON 条件的参数
+	joinType string // JOIN 类型：INNER、LEFT、RIGHT、FULL
+	table    string // 表名
+	on       string // ON 条件
+	args     []any  // ON 条件的参数
 }
 
 // whereClause WHERE 子句结构
 type whereClause struct {
-	condition string        // 条件表达式
-	args      []interface{} // 条件参数
+	condition string // 条件表达式
+	args      []any  // 条件参数
 }
 
 // havingClause HAVING 子句结构
 type havingClause struct {
-	condition string        // 条件表达式
-	args      []interface{} // 条件参数
+	condition string // 条件表达式
+	args      []any  // 条件参数
 }
 
-// SQL 关键词常量
+// SQL 关键词常量（保留供 build.go 与外部参考）
 const (
-	sqlSelect  = "SELECT"
 	sqlFrom    = "FROM"
 	sqlWhere   = "WHERE"
 	sqlGroupBy = "GROUP BY"
@@ -97,7 +96,7 @@ func (qr *MySQLQueryResult) Select(fields ...string) *MySQLQueryResult {
 // table: 要 JOIN 的表名
 // on: ON 条件
 // args: ON 条件的参数
-func (qr *MySQLQueryResult) Join(joinType, table, on string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) Join(joinType, table, on string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
 		return qr
 	}
@@ -107,22 +106,22 @@ func (qr *MySQLQueryResult) Join(joinType, table, on string, args ...interface{}
 }
 
 // InnerJoin 添加 INNER JOIN 子句
-func (qr *MySQLQueryResult) InnerJoin(table, on string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) InnerJoin(table, on string, args ...any) *MySQLQueryResult {
 	return qr.Join("INNER JOIN", table, on, args...)
 }
 
 // LeftJoin 添加 LEFT JOIN 子句
-func (qr *MySQLQueryResult) LeftJoin(table, on string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) LeftJoin(table, on string, args ...any) *MySQLQueryResult {
 	return qr.Join("LEFT JOIN", table, on, args...)
 }
 
 // RightJoin 添加 RIGHT JOIN 子句
-func (qr *MySQLQueryResult) RightJoin(table, on string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) RightJoin(table, on string, args ...any) *MySQLQueryResult {
 	return qr.Join("RIGHT JOIN", table, on, args...)
 }
 
 // Where 添加 WHERE 条件
-func (qr *MySQLQueryResult) Where(condition string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) Where(condition string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
 		return qr
 	}
@@ -132,7 +131,7 @@ func (qr *MySQLQueryResult) Where(condition string, args ...interface{}) *MySQLQ
 }
 
 // Or 添加 OR 条件
-func (qr *MySQLQueryResult) Or(condition string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) Or(condition string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
 		return qr
 	}
@@ -142,7 +141,7 @@ func (qr *MySQLQueryResult) Or(condition string, args ...interface{}) *MySQLQuer
 }
 
 // Not 添加 NOT 条件
-func (qr *MySQLQueryResult) Not(condition string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) Not(condition string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
 		return qr
 	}
@@ -162,7 +161,7 @@ func (qr *MySQLQueryResult) Group(fields ...string) *MySQLQueryResult {
 }
 
 // Having 添加 HAVING 条件
-func (qr *MySQLQueryResult) Having(condition string, args ...interface{}) *MySQLQueryResult {
+func (qr *MySQLQueryResult) Having(condition string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
 		return qr
 	}
@@ -220,7 +219,7 @@ func (qr *MySQLQueryResult) Offset(offset int) *MySQLQueryResult {
 }
 
 // First 扫描第一条结果到目标结构
-func (qr *MySQLQueryResult) First(dest interface{}) error {
+func (qr *MySQLQueryResult) First(dest any) error {
 	if qr.err != nil {
 		return qr.err
 	}
@@ -231,16 +230,13 @@ func (qr *MySQLQueryResult) First(dest interface{}) error {
 		query += " " + sqlLimit + " 1"
 	}
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := db.GetContext(qr.ctx, dest, query, args...)
+	err = db.GetContext(qr.ctx, dest, query, args...)
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
@@ -250,15 +246,15 @@ func (qr *MySQLQueryResult) First(dest interface{}) error {
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return fmt.Errorf("query first failed: %w", err)
+		return wrapMySQLError("", "first", err)
 	}
 
-	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, 1, args...)
+	qr.plugin.logQ(qr.ctx, "SELECT", query, duration, 1, args...)
 	return nil
 }
 
 // Find 扫描所有结果到目标切片
-func (qr *MySQLQueryResult) Find(dest interface{}) error {
+func (qr *MySQLQueryResult) Find(dest any) error {
 	if qr.err != nil {
 		return qr.err
 	}
@@ -266,25 +262,22 @@ func (qr *MySQLQueryResult) Find(dest interface{}) error {
 
 	query, args := qr.buildQuery()
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := db.SelectContext(qr.ctx, dest, query, args...)
+	err = db.SelectContext(qr.ctx, dest, query, args...)
 	duration := time.Since(start)
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return fmt.Errorf("query find failed: %w", err)
+		return wrapMySQLError("", "find", err)
 	}
 
 	rows := int64(reflect.ValueOf(dest).Elem().Len())
-	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, rows, args...)
+	qr.plugin.logQ(qr.ctx, "SELECT", query, duration, rows, args...)
 	return nil
 }
 
@@ -303,29 +296,26 @@ func (qr *MySQLQueryResult) Count(count *int64) error {
 
 	countQuery := sb.String()
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := db.GetContext(qr.ctx, count, countQuery)
+	err = db.GetContext(qr.ctx, count, countQuery)
 	duration := time.Since(start)
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, countQuery, duration, err)
-		return fmt.Errorf("count failed: %w", err)
+		return wrapMySQLError("", "count", err)
 	}
 
-	qr.plugin.queryLogger.LogQuery(qr.ctx, countQuery, duration, 1)
+	qr.plugin.logQ(qr.ctx, "COUNT", countQuery, duration, 1)
 	return nil
 }
 
 // Update 更新记录（链式调用）
-func (qr *MySQLQueryResult) Update(column string, value interface{}) error {
+func (qr *MySQLQueryResult) Update(column string, value any) error {
 	if qr.err != nil {
 		return qr.err
 	}
@@ -353,16 +343,13 @@ func (qr *MySQLQueryResult) Update(column string, value interface{}) error {
 	query = sb.String()
 
 	totalArgs := len(args) + 1
-	newArgs := make([]interface{}, 0, totalArgs)
+	newArgs := make([]any, 0, totalArgs)
 	newArgs = append(newArgs, value)
 	newArgs = append(newArgs, args...)
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
@@ -371,11 +358,11 @@ func (qr *MySQLQueryResult) Update(column string, value interface{}) error {
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, newArgs...)
-		return fmt.Errorf("update failed: %w", err)
+		return wrapMySQLError("", "update", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	qr.plugin.queryLogger.LogOperation(qr.ctx, "UPDATE", "", duration, rowsAffected, query, newArgs...)
+	qr.plugin.logQ(qr.ctx, "UPDATE", query, duration, rowsAffected, newArgs...)
 	return nil
 }
 
@@ -393,12 +380,9 @@ func (qr *MySQLQueryResult) Delete() error {
 		query = strings.Replace(query, "SELECT * FROM", "DELETE FROM", 1)
 	}
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
@@ -407,11 +391,11 @@ func (qr *MySQLQueryResult) Delete() error {
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return fmt.Errorf("delete failed: %w", err)
+		return wrapMySQLError("", "delete", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	qr.plugin.queryLogger.LogOperation(qr.ctx, "DELETE", "", duration, rowsAffected, query, args...)
+	qr.plugin.logQ(qr.ctx, "DELETE", query, duration, rowsAffected, args...)
 	return nil
 }
 
@@ -425,12 +409,9 @@ func (qr *MySQLQueryResult) Exec() (sql.Result, error) {
 
 	query, args := qr.buildQuery()
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return nil, ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return nil, err
 	}
 
 	start := time.Now()
@@ -439,11 +420,11 @@ func (qr *MySQLQueryResult) Exec() (sql.Result, error) {
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return nil, fmt.Errorf("exec failed: %w", err)
+		return nil, wrapMySQLError("", "exec", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	qr.plugin.queryLogger.LogOperation(qr.ctx, "EXEC", "", duration, rowsAffected, query, args...)
+	qr.plugin.logQ(qr.ctx, "EXEC", query, duration, rowsAffected, args...)
 	return result, nil
 }
 
@@ -476,7 +457,7 @@ func (qr *MySQLQueryResult) Distinct(fields ...string) *MySQLQueryResult {
 
 // Take 获取任意一条记录（不添加 LIMIT 1）
 // 用法：orm.Table("users").Where("status = ?", 1).Take(&user)
-func (qr *MySQLQueryResult) Take(dest interface{}) error {
+func (qr *MySQLQueryResult) Take(dest any) error {
 	if qr.err != nil {
 		return qr.err
 	}
@@ -484,16 +465,13 @@ func (qr *MySQLQueryResult) Take(dest interface{}) error {
 
 	query, args := qr.buildQuery()
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := db.GetContext(qr.ctx, dest, query, args...)
+	err = db.GetContext(qr.ctx, dest, query, args...)
 	duration := time.Since(start)
 
 	if err == sql.ErrNoRows {
@@ -503,16 +481,16 @@ func (qr *MySQLQueryResult) Take(dest interface{}) error {
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return fmt.Errorf("query take failed: %w", err)
+		return wrapMySQLError("", "take", err)
 	}
 
-	qr.plugin.queryLogger.LogQuery(qr.ctx, query, duration, 1, args...)
+	qr.plugin.logQ(qr.ctx, "SELECT", query, duration, 1, args...)
 	return nil
 }
 
 // Pluck 查询单列到切片
 // 用法：orm.Table("users").Where("age > ?", 18).Pluck("name", &names)
-func (qr *MySQLQueryResult) Pluck(field string, dest interface{}) error {
+func (qr *MySQLQueryResult) Pluck(field string, dest any) error {
 	if qr.err != nil {
 		return qr.err
 	}
@@ -533,23 +511,20 @@ func (qr *MySQLQueryResult) Pluck(field string, dest interface{}) error {
 		qr.query = qr.query[:selectPos+7] + field + qr.query[fromPos:]
 	}
 
-	qr.plugin.mu.RLock()
-	db := qr.plugin.db
-	qr.plugin.mu.RUnlock()
-
-	if db == nil {
-		return ErrMySQLNotEnabled
+	db, err := qr.plugin.getDB()
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := db.SelectContext(qr.ctx, dest, qr.query, args...)
+	err = db.SelectContext(qr.ctx, dest, qr.query, args...)
 	duration := time.Since(start)
 
 	if err != nil {
 		qr.plugin.queryLogger.LogError(qr.ctx, qr.query, duration, err, args...)
-		return fmt.Errorf("pluck failed: %w", err)
+		return wrapMySQLError("", "pluck", err)
 	}
 
-	qr.plugin.queryLogger.LogQuery(qr.ctx, qr.query, duration, 0, args...)
+	qr.plugin.logQ(qr.ctx, "SELECT", qr.query, duration, 0, args...)
 	return nil
 }

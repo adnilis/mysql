@@ -34,8 +34,15 @@ func sanitizeIdentifier(name string) string {
 //   - &[]User{} -> "users"
 //   - &User{} -> "users"
 //   - 实现了 IModel 接口的类型使用 TableName() 方法
-func getTableNameFromDest(dest interface{}) string {
+//   - dest 为 nil 或非结构体时返回 ""
+func getTableNameFromDest(dest any) string {
+	if dest == nil {
+		return ""
+	}
 	t := reflect.TypeOf(dest)
+	if t == nil {
+		return ""
+	}
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
@@ -52,21 +59,30 @@ func getTableNameFromDest(dest interface{}) string {
 }
 
 // toSnakeCase 将驼峰命名转换为蛇形命名
+// 规则：当前为大写且 (前一个字符是小写 或 后一个字符是小写) 时，前面插入下划线
 // 示例：
 //   - toSnakeCase("UserInfo") -> "user_info"
 //   - toSnakeCase("UserID") -> "user_id"
+//   - toSnakeCase("MySQLPlugin") -> "my_sql_plugin"
+//   - toSnakeCase("HTTPResponse") -> "http_response"
 func toSnakeCase(s string) string {
+	runes := []rune(s)
 	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteRune('_')
-		}
-		result.WriteRune(func() rune {
-			if r >= 'A' && r <= 'Z' {
-				return r + 32
+	result.Grow(len(runes) + 4)
+	for i, r := range runes {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				prev := runes[i-1]
+				prevIsLower := prev >= 'a' && prev <= 'z'
+				nextIsLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+				if prevIsLower || nextIsLower {
+					result.WriteRune('_')
+				}
 			}
-			return r
-		}())
+			result.WriteRune(r + 32)
+			continue
+		}
+		result.WriteRune(r)
 	}
 	return result.String()
 }

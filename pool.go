@@ -9,13 +9,13 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// mysqlLoggerConfig 适配器：让 MySQLPluginConfig 实现 QueryLoggerConfig 接口
+// mysqlLoggerConfig 适配器：把 MySQLPluginConfig 暴露为 QueryLoggerConfig 接口
 type mysqlLoggerConfig struct {
-	debug         bool
+	enabled       bool
 	slowThreshold int64
 }
 
-func (c *mysqlLoggerConfig) Debug() bool         { return c.debug }
+func (c *mysqlLoggerConfig) EnableQueryLog() bool { return c.enabled }
 func (c *mysqlLoggerConfig) SlowThreshold() int64 { return c.slowThreshold }
 
 // mysqlQueryResultPool QueryResult 对象池
@@ -69,48 +69,51 @@ func (qr *MySQLQueryResult) reset() {
 
 // Start 启动插件，建立数据库连接
 func (p *MySQLPlugin) Start(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// 构建 DSN 连接字符串
 	dsn := buildDSN(&p.config)
 
-	var err error
-	p.db, err = sqlx.Connect("mysql", dsn)
+	// 连接数据库（Start 由调用方保证单次执行，无需持锁）
+	db, err := sqlx.Connect("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("mysql connect failed: %w", err)
 	}
 
 	// 配置连接池参数
-	p.db.SetMaxOpenConns(p.config.PoolSize)
-	p.db.SetMaxIdleConns(p.config.MaxIdleConns)
-	p.db.SetConnMaxLifetime(p.config.MaxLifetime)
-	p.db.SetConnMaxIdleTime(p.config.MaxIdleTime)
+	db.SetMaxOpenConns(p.config.PoolSize)
+	db.SetMaxIdleConns(p.config.MaxIdleConns)
+	db.SetConnMaxLifetime(p.config.MaxLifetime)
+	db.SetConnMaxIdleTime(p.config.MaxIdleTime)
 
 	// Ping 验证连接
-	if err := p.db.Ping(); err != nil {
-		p.db.Close()
+	if err := db.Ping(); err != nil {
+		db.Close()
 		return fmt.Errorf("mysql ping failed: %w", err)
 	}
 
-	// 初始化查询日志记录器
+	// 原子发布 db 句柄
+	p.db.Store(db)
+
+	// 保护低频写入字段（state / queryLogger）
+	p.mu.Lock()
 	loggerConfig := &mysqlLoggerConfig{
-		debug:         p.config.Debug,
+		enabled:       p.config.EnableQueryLog,
 		slowThreshold: p.config.SlowThreshold,
 	}
 	p.queryLogger = NewQueryLogger(loggerConfig)
-
 	p.state = mysqlPluginStateRunning
+	p.mu.Unlock()
 
 	// 监听上下文取消信号
-	// 注意：stopOnce 是线程安全的，但需要确保在 Stop() 之前不会被访问
-	stopOnce := &p.stopOnce
-	go func(stopOnce *sync.Once) {
-		<-ctx.Done()
-		stopOnce.Do(func() {
+	// 通过 done 通道允许 Stop() 在 ctx 取消前主动结束此 goroutine，避免泄漏
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-p.done:
+		}
+		p.stopOnce.Do(func() {
 			close(p.stopCh)
 		})
-	}(stopOnce)
+	}()
 
 	logger.Info("[MySQL] connected to %s/%s", p.config.Addr, p.config.DBName)
 	return nil
@@ -118,26 +121,31 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 
 // Stop 停止插件，关闭数据库连接
 func (p *MySQLPlugin) Stop(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// 初始化 stopCh 如果尚未初始化（防御性编程）
+	// 初始化 stopCh / done 如果尚未初始化（防御性编程）
 	if p.stopCh == nil {
 		p.stopCh = make(chan struct{})
 	}
+	if p.done == nil {
+		p.done = make(chan struct{})
+	}
 
 	p.stopOnce.Do(func() {
+		close(p.done)
 		close(p.stopCh)
 	})
 
-	if p.db != nil {
-		if err := p.db.Close(); err != nil {
+	// 原子取出 db 并置空
+	db := p.db.Swap(nil)
+	if db != nil {
+		if err := db.Close(); err != nil {
 			return fmt.Errorf("mysql close failed: %w", err)
 		}
-		p.db = nil
 	}
 
+	p.mu.Lock()
 	p.state = mysqlPluginStateStopped
+	p.mu.Unlock()
+
 	logger.Info("[MySQL] disconnected from %s/%s", p.config.Addr, p.config.DBName)
 	return nil
 }

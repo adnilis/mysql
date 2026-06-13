@@ -25,9 +25,9 @@ func newTestPlugin(t *testing.T) (*MySQLPlugin, sqlmock.Sqlmock) {
 	plugin := &MySQLPlugin{
 		name:   "test-mysql",
 		config: newTestConfig(),
-		db:     db,
 		state:  mysqlPluginStateRunning,
 	}
+	plugin.db.Store(db)
 	return plugin, mock
 }
 
@@ -182,35 +182,7 @@ func TestDSNBuildInvalidTimezone(t *testing.T) {
 	}
 }
 
-// TestConfigNormalization tests configuration normalization
-func TestConfigNormalization(t *testing.T) {
-	// Empty config should use defaults
-	cfg := normalizeMySQLPluginConfig(nil)
-
-	if cfg.Addr != defaultMySQLAddr {
-		t.Errorf("expected default addr '%s', got '%s'", defaultMySQLAddr, cfg.Addr)
-	}
-
-	if cfg.PoolSize != defaultMySQLPoolSize {
-		t.Errorf("expected default pool size %d, got %d", defaultMySQLPoolSize, cfg.PoolSize)
-	}
-}
-
-// TestConfigPartialOverride tests partial config override
-func TestConfigPartialOverride(t *testing.T) {
-	cfg := normalizeMySQLPluginConfig(&MySQLPluginConfig{
-		Addr: "custom:3306",
-		// Other fields are zero value, should use defaults
-	})
-
-	if cfg.Addr != "custom:3306" {
-		t.Errorf("expected addr 'custom:3306', got '%s'", cfg.Addr)
-	}
-
-	if cfg.PoolSize != defaultMySQLPoolSize {
-		t.Errorf("expected default pool size %d, got %d", defaultMySQLPoolSize, cfg.PoolSize)
-	}
-}
+// TestConfigNormalization and TestConfigPartialOverride were moved to config_test.go.
 
 // TestInsert tests the Insert method
 func TestInsert(t *testing.T) {

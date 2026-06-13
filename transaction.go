@@ -16,32 +16,34 @@ type MySQLTransaction struct {
 }
 
 // Commit 提交事务
-func (t *MySQLTransaction) Commit() error {
+// ctx 用于日志记录的上下文传递（事务底层的 sqlx.Tx.Commit 本身不接受 ctx）
+func (t *MySQLTransaction) Commit(ctx context.Context) error {
 	start := time.Now()
 	err := t.tx.Commit()
 	duration := time.Since(start)
 
 	if err != nil {
-		t.plugin.queryLogger.LogError(context.Background(), "COMMIT", duration, err)
+		t.plugin.queryLogger.LogError(ctx, "COMMIT", duration, err)
 		return fmt.Errorf("commit failed: %w", err)
 	}
 
-	t.plugin.queryLogger.LogTransaction(context.Background(), "COMMIT", duration)
+	t.plugin.queryLogger.LogTransaction(ctx, "COMMIT", duration)
 	return nil
 }
 
 // Rollback 回滚事务
-func (t *MySQLTransaction) Rollback() error {
+// ctx 用于日志记录的上下文传递。重复回滚返回 nil（容忍 sql.ErrTxDone）
+func (t *MySQLTransaction) Rollback(ctx context.Context) error {
 	start := time.Now()
 	err := t.tx.Rollback()
 	duration := time.Since(start)
 
 	if err != nil && err != sql.ErrTxDone {
-		t.plugin.queryLogger.LogError(context.Background(), "ROLLBACK", duration, err)
+		t.plugin.queryLogger.LogError(ctx, "ROLLBACK", duration, err)
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
-	t.plugin.queryLogger.LogTransaction(context.Background(), "ROLLBACK", duration)
+	t.plugin.queryLogger.LogTransaction(ctx, "ROLLBACK", duration)
 	return nil
 }
 
@@ -87,6 +89,6 @@ func (t *MySQLTransaction) Exec(ctx context.Context, query string, args ...inter
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	t.plugin.queryLogger.LogOperation(ctx, "EXEC", "", duration, rowsAffected, query, args...)
+	t.plugin.logQ(ctx, "EXEC", query, duration, rowsAffected, args...)
 	return result, nil
 }

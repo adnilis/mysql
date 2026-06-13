@@ -15,12 +15,9 @@ import (
 // batchSize: 每批次的记录数（建议 100-500）
 // 返回所有插入记录的 ID 列表
 func (p *MySQLPlugin) BatchInsert(ctx context.Context, models []IModel, batchSize int) ([]int64, error) {
-	p.mu.RLock()
-	db := p.db
-	p.mu.RUnlock()
-
-	if db == nil {
-		return nil, ErrMySQLNotEnabled
+	db, err := p.getDB()
+	if err != nil {
+		return nil, err
 	}
 
 	if len(models) == 0 {
@@ -31,7 +28,7 @@ func (p *MySQLPlugin) BatchInsert(ctx context.Context, models []IModel, batchSiz
 		batchSize = 100 // 默认批次大小
 	}
 
-	var allIDs []int64
+	allIDs := make([]int64, 0, len(models))
 
 	// 分批处理
 	for i := 0; i < len(models); i += batchSize {
@@ -62,25 +59,24 @@ func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch 
 		return nil, fmt.Errorf("no columns to insert for batch")
 	}
 
-	// 构建 VALUES 部分
-	var valueStrings []string
-	valueArgs := make([]interface{}, 0, len(batch)*len(scanner.meta.columns))
+	columnCount := len(scanner.meta.columns)
+	valueArgs := make([]interface{}, 0, len(batch)*columnCount)
+
+	// 预构建单行占位符，避免每行重复分配
+	rowPlaceholder := "(" + strings.TrimRight(strings.Repeat("?,", columnCount), ",") + ")"
 
 	for _, model := range batch {
 		modelScanner := newFieldScanner(model)
 		fields := modelScanner.dbFields()
 
-		var valuePlaceholders []string
 		for _, f := range fields {
-			valuePlaceholders = append(valuePlaceholders, "?")
 			valueArgs = append(valueArgs, f.value)
 		}
-		valueStrings = append(valueStrings, fmt.Sprintf("(%s)", strings.Join(valuePlaceholders, ", ")))
 	}
 
 	// 构建完整的 INSERT 语句
 	var builder strings.Builder
-	builder.Grow(32 + len(scanner.table) + len(scanner.meta.columns)*8 + len(valueStrings)*10)
+	builder.Grow(32 + len(scanner.table) + len(scanner.meta.columns)*8 + len(batch)*len(rowPlaceholder))
 	builder.WriteString("INSERT INTO ")
 	builder.WriteString(scanner.table)
 	builder.WriteString(" (")
@@ -91,11 +87,11 @@ func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch 
 		builder.WriteString(col)
 	}
 	builder.WriteString(") VALUES ")
-	for i, vs := range valueStrings {
+	for i := range batch {
 		if i > 0 {
 			builder.WriteString(", ")
 		}
-		builder.WriteString(vs)
+		builder.WriteString(rowPlaceholder)
 	}
 
 	query := builder.String()
@@ -117,12 +113,17 @@ func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch 
 		return nil, wrapMySQLError(scanner.table, "batch insert", fmt.Errorf("failed to get last insert id: %w", err))
 	}
 
-	// 生成所有插入的 ID（假设自增 ID 连续）
+	// 生成所有插入的 ID
+	// 注意：此处仅在 innodb_autoinc_lock_mode=1（InnoDB 默认）且本次事务/语句内
+	// 没有并发 INSERT 时，`lastID + i` 才与实际分配的 ID 一一对应。
+	// 在 innodb_autoinc_lock_mode=2（高并发模式）下 LAST_INSERT_ID 返回的是
+	// 第一个分配的 ID，但分配可能不连续；调用方若依赖确切 ID 应在表上使用
+	// 显式主键（如 UUID）而非自增列。
 	ids := make([]int64, len(batch))
 	for i := range ids {
 		ids[i] = lastID + int64(i)
 	}
 
-	p.queryLogger.LogOperation(ctx, "BATCH_INSERT", scanner.table, duration, int64(len(batch)), query, valueArgs...)
+	p.logQ(ctx, "BATCH_INSERT", query, duration, int64(len(batch)), valueArgs...)
 	return ids, nil
 }
