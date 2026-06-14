@@ -12,16 +12,16 @@ import (
 
 // MySQLPlugin 是 WMA 框架的 MySQL 插件实现
 type MySQLPlugin struct {
-	mu          sync.RWMutex           // 读写锁，保护 state 等低频写入字段
-	name        string                 // 插件名称
-	config      MySQLPluginConfig      // 插件配置
-	app         *wma.App               // WMA 应用实例
+	mu          sync.RWMutex            // 读写锁，保护 state 等低频写入字段
+	name        string                  // 插件名称
+	config      MySQLPluginConfig       // 插件配置
+	app         *wma.App                // WMA 应用实例
 	db          atomic.Pointer[sqlx.DB] // sqlx 数据库连接（无锁读取，热路径优化）
-	stopCh      chan struct{}          // 停止通道（外部观察）
-	done        chan struct{}          // 触发监听 goroutine 退出
-	stopOnce    sync.Once              // 确保停止操作只执行一次
-	state       mysqlPluginState       // 插件状态
-	queryLogger *QueryLogger           // 查询日志记录器
+	stopCh      chan struct{}           // 停止通道（外部观察）
+	done        chan struct{}           // 触发监听 goroutine 退出
+	stopOnce    sync.Once               // 确保停止操作只执行一次
+	state       mysqlPluginState        // 插件状态
+	queryLogger *QueryLogger            // 查询日志记录器
 }
 
 // mysqlPluginState 插件状态枚举

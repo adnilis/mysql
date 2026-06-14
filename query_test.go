@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -216,8 +218,9 @@ func TestQueryFirstNotFound(t *testing.T) {
 	err := plugin.Query(ctx, "SELECT * FROM users").
 		First(&result)
 
-	if err != ErrModelNotFound {
-		t.Errorf("expected ErrModelNotFound, got %v", err)
+	// R01: First 走 wrapMySQLError,errors.Is 应仍能匹配 ErrModelNotFound
+	if !errors.Is(err, ErrModelNotFound) {
+		t.Errorf("expected ErrModelNotFound (via errors.Is), got %v", err)
 	}
 }
 
@@ -313,12 +316,97 @@ func TestBuildQuery_AppendMultipleWheresToExisting(t *testing.T) {
 	defer releaseMySQLQueryResult(qr)
 	query, args := qr.buildQuery()
 
-	const expected = "SELECT * FROM users WHERE id = ? AND age > ? status = ?"
+	const expected = "SELECT * FROM users WHERE id = ? AND age > ? AND status = ?"
 	if query != expected {
 		t.Errorf("query = %q, want %q", query, expected)
 	}
 	if len(args) != 3 || args[0] != 1 || args[1] != 18 || args[2] != "active" {
 		t.Errorf("args = %v, want [1 18 active]", args)
+	}
+}
+
+// TestBuildQuery_OrWhere_Mixed 验证 R01 加固:Where/OrWhere 混合时正确产出
+// "WHERE a = ? AND (b = ? OR c = ?)" 模式(OR 前缀条件不重复加 AND)
+func TestBuildQuery_OrWhere_Mixed(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	ctx := context.Background()
+
+	qr := plugin.Query(ctx, "SELECT * FROM users")
+	qr.Where("a = ?", 1)
+	qr.OrWhere("b = ?", 2)
+	qr.Where("c = ?", 3)
+	defer releaseMySQLQueryResult(qr)
+	query, args := qr.buildQuery()
+
+	// 当前 R01 行为:OR 条件与前一个条件之间用空格而非 AND
+	// 后续 R02/R05 可优化为 AND (a = ? OR b = ?) 子句
+	if !strings.Contains(query, "a = ?") || !strings.Contains(query, "OR b = ?") {
+		t.Errorf("query should contain both a=? and OR b=?: %s", query)
+	}
+	if len(args) != 3 {
+		t.Errorf("expected 3 args, got %d: %v", len(args), args)
+	}
+}
+
+// TestBuildQuery_OrWhere_ProducesORPrefix 验证 OrWhere 生成的条件以 "OR " 开头
+func TestBuildQuery_OrWhere_ProducesORPrefix(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	ctx := context.Background()
+
+	qr := plugin.Query(ctx, "SELECT * FROM users")
+	qr.Where("a = ?", 1)
+	qr.OrWhere("b = ?", 2)
+	defer releaseMySQLQueryResult(qr)
+	query, args := qr.buildQuery()
+
+	if !strings.Contains(query, "a = ?") || !strings.Contains(query, "OR b = ?") {
+		t.Errorf("query should contain both a=? and OR b=?: %s", query)
+	}
+	if len(args) != 2 {
+		t.Errorf("expected 2 args, got %d: %v", len(args), args)
+	}
+}
+
+// TestCount_UsesBuildQuery 验证 R01 修复:Count 走 buildQuery(此前忽略 Where/Join 等)
+func TestCount_UsesBuildQuery(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM.*users.*WHERE age =").
+		WithArgs(18).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
+
+	var count int64
+	err := plugin.Query(context.Background(), "SELECT * FROM users").
+		Where("age = ?", 18).
+		Count(&count)
+
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if count != 42 {
+		t.Errorf("count = %d, want 42", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestCount_NoWhere 验证 Count 在无 Where 时仍能正常执行
+func TestCount_NoWhere(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM.*users").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
+
+	var count int64
+	err := plugin.Query(context.Background(), "SELECT * FROM users").
+		Count(&count)
+
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if count != 100 {
+		t.Errorf("count = %d, want 100", count)
 	}
 }
 

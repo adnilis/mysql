@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +180,53 @@ func TestDSNBuildInvalidTimezone(t *testing.T) {
 	dsn := buildDSN(cfg)
 	if dsn == "" {
 		t.Error("expected non-empty DSN even with invalid timezone")
+	}
+}
+
+// TestDSNBuildIncludesTimeouts verifies ConnTimeout/ReadTimeout/WriteTimeout
+// are propagated into the DSN string (R01 风险 #4 修复)
+func TestDSNBuildIncludesTimeouts(t *testing.T) {
+	cfg := &MySQLPluginConfig{
+		Addr:         "localhost:3306",
+		User:         "root",
+		Password:     "password",
+		DBName:       "testdb",
+		ParseTime:    true,
+		ConnTimeout:  7 * time.Second,
+		ReadTimeout:  11 * time.Second,
+		WriteTimeout: 13 * time.Second,
+	}
+
+	dsn := buildDSN(cfg)
+
+	// mysql.Config.FormatDSN 会以 readTimeout=(11s) 形式输出
+	if !strings.Contains(dsn, "timeout=7s") {
+		t.Errorf("DSN missing ConnTimeout(7s): %s", dsn)
+	}
+	if !strings.Contains(dsn, "readTimeout=11s") {
+		t.Errorf("DSN missing ReadTimeout(11s): %s", dsn)
+	}
+	if !strings.Contains(dsn, "writeTimeout=13s") {
+		t.Errorf("DSN missing WriteTimeout(13s): %s", dsn)
+	}
+}
+
+// TestDSNBuildZeroTimeouts verifies zero-value timeouts are tolerated
+// (驱动默认行为,DSN 字符串可包含 "timeout=0s" 等,不应 panic)
+func TestDSNBuildZeroTimeouts(t *testing.T) {
+	cfg := &MySQLPluginConfig{
+		Addr:         "localhost:3306",
+		User:         "root",
+		Password:     "password",
+		DBName:       "testdb",
+		ConnTimeout:  0,
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+	}
+
+	dsn := buildDSN(cfg)
+	if dsn == "" {
+		t.Error("DSN should be non-empty even with zero timeouts")
 	}
 }
 

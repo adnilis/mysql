@@ -130,6 +130,13 @@ func (qr *MySQLQueryResult) Where(condition string, args ...any) *MySQLQueryResu
 	return qr
 }
 
+// OrWhere 是 Or(condition) 的语义化别名(API 一致性)
+//
+// 推荐使用 OrWhere 而非 Or,语义更明确
+func (qr *MySQLQueryResult) OrWhere(condition string, args ...any) *MySQLQueryResult {
+	return qr.Or(condition, args...)
+}
+
 // Or 添加 OR 条件
 func (qr *MySQLQueryResult) Or(condition string, args ...any) *MySQLQueryResult {
 	if qr.err != nil {
@@ -241,7 +248,7 @@ func (qr *MySQLQueryResult) First(dest any) error {
 
 	if err == sql.ErrNoRows {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return ErrModelNotFound
+		return wrapMySQLError("", "first", ErrModelNotFound)
 	}
 
 	if err != nil {
@@ -282,16 +289,22 @@ func (qr *MySQLQueryResult) Find(dest any) error {
 }
 
 // Count 统计结果数量
+//
+// 走 buildQuery 应用 Where/Join/Group 等链式条件(R01 修复)
+// 内部用 "SELECT COUNT(*) FROM (inner) AS count_table" 包裹以兼容复杂查询
 func (qr *MySQLQueryResult) Count(count *int64) error {
 	if qr.err != nil {
 		return qr.err
 	}
 	defer releaseMySQLQueryResult(qr)
 
+	// 走 buildQuery 以应用 Where/Join/Group/Having 等链式条件
+	innerQuery, innerArgs := qr.buildQuery()
+
 	var sb strings.Builder
-	sb.Grow(len(qr.query) + 40)
+	sb.Grow(len(innerQuery) + 40)
 	sb.WriteString("SELECT COUNT(*) FROM (")
-	sb.WriteString(qr.query)
+	sb.WriteString(innerQuery)
 	sb.WriteString(") AS count_table")
 
 	countQuery := sb.String()
@@ -302,15 +315,15 @@ func (qr *MySQLQueryResult) Count(count *int64) error {
 	}
 
 	start := time.Now()
-	err = db.GetContext(qr.ctx, count, countQuery)
+	err = db.GetContext(qr.ctx, count, countQuery, innerArgs...)
 	duration := time.Since(start)
 
 	if err != nil {
-		qr.plugin.queryLogger.LogError(qr.ctx, countQuery, duration, err)
+		qr.plugin.queryLogger.LogError(qr.ctx, countQuery, duration, err, innerArgs...)
 		return wrapMySQLError("", "count", err)
 	}
 
-	qr.plugin.logQ(qr.ctx, "COUNT", countQuery, duration, 1)
+	qr.plugin.logQ(qr.ctx, "COUNT", countQuery, duration, 1, innerArgs...)
 	return nil
 }
 
@@ -476,7 +489,7 @@ func (qr *MySQLQueryResult) Take(dest any) error {
 
 	if err == sql.ErrNoRows {
 		qr.plugin.queryLogger.LogError(qr.ctx, query, duration, err, args...)
-		return ErrModelNotFound
+		return wrapMySQLError("", "take", ErrModelNotFound)
 	}
 
 	if err != nil {

@@ -155,3 +155,102 @@ func TestTransactionCommitDone(t *testing.T) {
 		t.Error("expected error on commit after rollback")
 	}
 }
+
+// TestTransactionClose_AutoRollback verifies R01 安全网:未 Commit/Rollback 时,
+// Close 应自动回滚,防止事务句柄泄漏
+func TestTransactionClose_AutoRollback(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectRollback() // Close 应触发回滚
+
+	tx, err := plugin.Begin()
+	if err != nil {
+		t.Fatalf("failed to begin: %v", err)
+	}
+
+	// 未显式 Commit/Rollback,直接 Close → 应自动回滚
+	if err := tx.Close(); err != nil {
+		t.Errorf("Close should auto-rollback, got: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("rollback expectation not met: %v", err)
+	}
+}
+
+// TestTransactionClose_AfterCommit verifies Close in defer 不应破坏已 Commit 的事务
+func TestTransactionClose_AfterCommit(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectCommit() // 只有 Commit,不应再 Rollback
+
+	tx, err := plugin.Begin()
+	if err != nil {
+		t.Fatalf("failed to begin: %v", err)
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+
+	// Close 在 Commit 之后应是 no-op
+	if err := tx.Close(); err != nil {
+		t.Errorf("Close after Commit should be no-op, got: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestTransactionClose_AfterRollback verifies Close in defer 在已 Rollback 后是 no-op
+func TestTransactionClose_AfterRollback(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectRollback() // 只 Rollback 一次
+
+	tx, err := plugin.Begin()
+	if err != nil {
+		t.Fatalf("failed to begin: %v", err)
+	}
+
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	// Close 之后是 no-op
+	if err := tx.Close(); err != nil {
+		t.Errorf("Close after Rollback should be no-op, got: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestTransactionClose_Idempotent 多次 Close 安全
+func TestTransactionClose_Idempotent(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	tx, err := plugin.Begin()
+	if err != nil {
+		t.Fatalf("failed to begin: %v", err)
+	}
+
+	// 多次 Close,只应回滚一次
+	for i := 0; i < 3; i++ {
+		if err := tx.Close(); err != nil {
+			t.Errorf("Close #%d should not error, got: %v", i, err)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("rollback called more than expected: %v", err)
+	}
+}

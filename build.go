@@ -63,7 +63,13 @@ func emitEdit(e *edit, b *strings.Builder, allArgs *[]interface{}) {
 			if i == 0 {
 				b.WriteString(w.condition)
 			} else {
-				b.WriteString(" ")
+				// R01 修复:多 Where 之间用 AND 连接
+				// 若条件已带 OR/NOT 前缀(来自链式 Or()/Not()),则只补一个空格
+				if strings.HasPrefix(w.condition, "OR ") || strings.HasPrefix(w.condition, "NOT ") {
+					b.WriteString(" ")
+				} else {
+					b.WriteString(" AND ")
+				}
 				b.WriteString(w.condition)
 			}
 			*allArgs = append(*allArgs, w.args...)
@@ -74,7 +80,12 @@ func emitEdit(e *edit, b *strings.Builder, allArgs *[]interface{}) {
 			if i == 0 {
 				b.WriteString(w.condition)
 			} else {
-				b.WriteString(" ")
+				// 同 editWhereInsert:多 Where 之间用 AND,OR/NOT 前缀除外
+				if strings.HasPrefix(w.condition, "OR ") || strings.HasPrefix(w.condition, "NOT ") {
+					b.WriteString(" ")
+				} else {
+					b.WriteString(" AND ")
+				}
 				b.WriteString(w.condition)
 			}
 			*allArgs = append(*allArgs, w.args...)

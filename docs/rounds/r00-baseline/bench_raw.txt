@@ -1,0 +1,18 @@
+﻿goos: windows
+goarch: amd64
+pkg: github.com/adnilis/wma/plugins/mysql
+cpu: Intel(R) Core(TM) i9-14900HX
+BenchmarkQueryBuild-32               	       3	      3200 ns/op	    2050 B/op	       6 allocs/op
+BenchmarkQueryBuildCached-32         	       3	       100.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQuerySelect-32              	       3	     17467 ns/op	    5437 B/op	      30 allocs/op
+BenchmarkBatchInsert-32              	       3	     15900 ns/op	    6016 B/op	      64 allocs/op
+BenchmarkObjectPoolAcquire-32        	       3	       866.7 ns/op	    2066 B/op	       3 allocs/op
+BenchmarkDSNBuild-32                 	       3	     35133 ns/op	   42632 B/op	      17 allocs/op
+BenchmarkFieldScannerMetaCache-32    	       3	       566.7 ns/op	     138 B/op	       4 allocs/op
+BenchmarkInsertSQLBuild-32           	       3	      2367 ns/op	     138 B/op	       4 allocs/op
+BenchmarkUpdateByIDSQLBuild-32       	       3	       600.0 ns/op	     128 B/op	       3 allocs/op
+BenchmarkGetDBParallel-32            	       3	     11733 ns/op	    4146 B/op	      30 allocs/op
+BenchmarkFormatQuery-32              	       3	      4133 ns/op	    3522 B/op	      21 allocs/op
+BenchmarkFormatTableNames-32         	       3	      2567 ns/op	    2610 B/op	      14 allocs/op
+PASS
+ok  	github.com/adnilis/wma/plugins/mysql	0.046s

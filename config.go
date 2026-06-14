@@ -7,22 +7,22 @@ import (
 
 // MySQLPluginConfig MySQL 插件配置
 type MySQLPluginConfig struct {
-	Addr            string        // MySQL 地址，如 "localhost:3306"
-	User            string        // MySQL 用户名
-	Password        string        // MySQL 密码
-	DBName          string        // 数据库名称
-	PoolSize        int           // 连接池最大连接数
-	MinIdleConns    int           // 连接池最小空闲连接数
-	MaxIdleConns    int           // 连接池最大空闲连接数
-	MaxLifetime     time.Duration // 连接最大生命周期，0 表示无限制
-	MaxIdleTime     time.Duration // 空闲连接最大存活时间
-	ConnTimeout     time.Duration // 连接超时时间
-	ReadTimeout     time.Duration // 读取超时时间
-	WriteTimeout    time.Duration // 写入超时时间
-	ParseTime       bool          // 是否解析时间字段为 time.Time
-	Loc             string        // 时区位置，如 "Local"、"Asia/Shanghai"
-	EnableQueryLog  bool          // 是否启用 SQL 查询日志（INSERT/UPDATE/DELETE/SELECT 等）
-	SlowThreshold   int64         // 慢查询阈值（毫秒），0 表示不启用
+	Addr           string        // MySQL 地址，如 "localhost:3306"
+	User           string        // MySQL 用户名
+	Password       string        // MySQL 密码
+	DBName         string        // 数据库名称
+	PoolSize       int           // 连接池最大连接数
+	MinIdleConns   int           // 连接池最小空闲连接数
+	MaxIdleConns   int           // 连接池最大空闲连接数
+	MaxLifetime    time.Duration // 连接最大生命周期，0 表示无限制
+	MaxIdleTime    time.Duration // 空闲连接最大存活时间
+	ConnTimeout    time.Duration // 连接超时时间
+	ReadTimeout    time.Duration // 读取超时时间
+	WriteTimeout   time.Duration // 写入超时时间
+	ParseTime      bool          // 是否解析时间字段为 time.Time
+	Loc            string        // 时区位置，如 "Local"、"Asia/Shanghai"
+	EnableQueryLog bool          // 是否启用 SQL 查询日志（INSERT/UPDATE/DELETE/SELECT 等）
+	SlowThreshold  int64         // 慢查询阈值（毫秒），0 表示不启用
 }
 
 // 默认配置值

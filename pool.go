@@ -40,6 +40,19 @@ func acquireMySQLQueryResult() *MySQLQueryResult {
 	return qr
 }
 
+// effectiveMaxIdleConns 计算实际生效的 MaxIdleConns
+//
+// Go 标准库 database/sql 没有 SetMinIdleConns,通过把 SetMaxIdleConns 设为
+// max(MaxIdleConns, MinIdleConns) 来保证连接池至少能保留 MinIdleConns 个
+// 空闲连接(不会被回收低于此值)
+func effectiveMaxIdleConns(cfg *MySQLPluginConfig) int {
+	maxIdle := cfg.MaxIdleConns
+	if cfg.MinIdleConns > maxIdle {
+		maxIdle = cfg.MinIdleConns
+	}
+	return maxIdle
+}
+
 // releaseMySQLQueryResult 释放 QueryResult 到对象池
 func releaseMySQLQueryResult(qr *MySQLQueryResult) {
 	if qr != nil {
@@ -79,8 +92,12 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 	}
 
 	// 配置连接池参数
+	//
+	// MinIdleConns 处理:Go 标准库 database/sql 没有 SetMinIdleConns,
+	// 通过把 SetMaxIdleConns 设为 max(MaxIdleConns, MinIdleConns) 来保证
+	// 连接池至少能保留 MinIdleConns 个空闲连接(不会被回收低于此值)
 	db.SetMaxOpenConns(p.config.PoolSize)
-	db.SetMaxIdleConns(p.config.MaxIdleConns)
+	db.SetMaxIdleConns(effectiveMaxIdleConns(&p.config))
 	db.SetConnMaxLifetime(p.config.MaxLifetime)
 	db.SetConnMaxIdleTime(p.config.MaxIdleTime)
 
@@ -90,8 +107,10 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 		return fmt.Errorf("mysql ping failed: %w", err)
 	}
 
-	// 原子发布 db 句柄
-	p.db.Store(db)
+	// 原子发布 db 句柄,若已存在旧 db 则先关闭(防重入/资源泄漏)
+	if old := p.db.Swap(db); old != nil {
+		_ = old.Close()
+	}
 
 	// 保护低频写入字段（state / queryLogger）
 	p.mu.Lock()

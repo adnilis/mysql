@@ -11,7 +11,7 @@ import (
 // 把先前在 fieldMeta/getFieldMeta/dbFields 三处重复的匿名 struct 提取为命名类型
 type fieldInfo struct {
 	tag      string // db tag 列名
-	fieldIdx int   // 在结构体中的字段索引
+	fieldIdx int    // 在结构体中的字段索引
 }
 
 // fieldMeta 类型元数据缓存

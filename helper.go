@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
@@ -88,14 +89,28 @@ func toSnakeCase(s string) string {
 }
 
 // wrappedMySQLError 带表名和操作的错误
+//
+// 格式: "tableName: operation failed: underlying error"
+//
+// 支持 errors.Is/As:
+//   - errors.Is(wrapped, ErrModelNotFound) 在底层 err 匹配时返回 true
+//   - errors.As(wrapped, &target) 可还原为 *wrappedMySQLError 访问 table/op 字段
+//
+// 推荐用法:
+//
+//	if errors.Is(err, mysqlplugin.ErrModelNotFound) {
+//	    // 记录未命中
+//	}
 type wrappedMySQLError struct {
 	table string
 	op    string
 	err   error
 }
 
-// wrapMySQLError 包装数据库操作错误
-// 格式: "tableName: operation failed: underlying error"
+// wrapMySQLError 包装数据库操作错误,返回的错误支持 errors.Is/As
+//   - table: 表名,可为空字符串
+//   - op: 操作描述(如 "insert"/"update"/"select"/"delete"/"count"/"exec"/"first"/"get"/"take")
+//   - err: 底层错误,若为 nil 则返回 nil
 func wrapMySQLError(table, op string, err error) error {
 	if err == nil {
 		return nil
@@ -108,7 +123,33 @@ func (e *wrappedMySQLError) Error() string {
 	return e.table + ": " + e.op + " failed: " + e.err.Error()
 }
 
-// Unwrap 返回被包装的原始错误
+// Unwrap 返回被包装的原始错误,支持 errors.Is/As 链路遍历
 func (e *wrappedMySQLError) Unwrap() error {
 	return e.err
 }
+
+// Is 支持 errors.Is 短路匹配
+// 直接匹配自身或通过 Unwrap 链匹配底层错误,使 ErrModelNotFound 等 sentinel
+// 可被 errors.Is 在包装层级中识别
+func (e *wrappedMySQLError) Is(target error) bool {
+	if target == nil {
+		return false
+	}
+	return errors.Is(e.err, target)
+}
+
+// Table 返回表名(可能为空)
+func (e *wrappedMySQLError) Table() string { return e.table }
+
+// Op 返回操作描述(如 "insert"/"update"/"select")
+func (e *wrappedMySQLError) Op() string { return e.op }
+
+// MySQLError 是 wrappedMySQLError 的导出别名,便于外部包做 errors.As
+//
+// 推荐在外部包这样使用:
+//
+//	var mErr *mysqlplugin.MySQLError
+//	if errors.As(err, &mErr) {
+//	    log.Printf("table=%s op=%s", mErr.Table(), mErr.Op())
+//	}
+type MySQLError = wrappedMySQLError

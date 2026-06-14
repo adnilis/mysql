@@ -183,3 +183,77 @@ func TestWrapMySQLError_PreservesSentinels(t *testing.T) {
 		t.Error("ErrModelNotFound must be reachable through wrapMySQLError")
 	}
 }
+
+// TestWrapMySQLError_Is_Method exercises the *wrappedMySQLError.Is short-circuit
+func TestWrapMySQLError_Is_Method(t *testing.T) {
+	wrapped := wrapMySQLError("users", "select", ErrModelNotFound)
+
+	// 1) 通过 errors.Is 走 Unwrap 链能匹配 sentinel
+	if !errors.Is(wrapped, ErrModelNotFound) {
+		t.Error("errors.Is should match ErrModelNotFound via Unwrap")
+	}
+
+	// 2) Is 方法直接被调用:wrapped.(*wrappedMySQLError).Is(...) 应返回 true
+	mErr, ok := wrapped.(*wrappedMySQLError)
+	if !ok {
+		t.Fatal("wrapMySQLError should return *wrappedMySQLError")
+	}
+	if !mErr.Is(ErrModelNotFound) {
+		t.Error("Is(ErrModelNotFound) should return true")
+	}
+
+	// 3) Is(nil) 必须返回 false
+	if mErr.Is(nil) {
+		t.Error("Is(nil) should return false")
+	}
+
+	// 4) Is 对不相关的错误返回 false
+	if mErr.Is(ErrInvalidModel) {
+		t.Error("Is(ErrInvalidModel) should return false")
+	}
+
+	// 5) 双层 wrap 也能找到底层 sentinel
+	double := wrapMySQLError("outer", "op", wrapped)
+	if !errors.Is(double, ErrModelNotFound) {
+		t.Error("errors.Is must traverse double-wrap to find ErrModelNotFound")
+	}
+}
+
+// TestWrapMySQLError_Accessors covers Table()/Op() for downstream introspection
+func TestWrapMySQLError_Accessors(t *testing.T) {
+	wrapped := wrapMySQLError("users", "insert", errors.New("dup"))
+
+	mErr, ok := wrapped.(*wrappedMySQLError)
+	if !ok {
+		t.Fatal("wrapMySQLError should return *wrappedMySQLError")
+	}
+	if mErr.Table() != "users" {
+		t.Errorf("Table() = %q, want %q", mErr.Table(), "users")
+	}
+	if mErr.Op() != "insert" {
+		t.Errorf("Op() = %q, want %q", mErr.Op(), "insert")
+	}
+
+	// 空表名也合法
+	empty := wrapMySQLError("", "get", errors.New("x"))
+	eErr, _ := empty.(*wrappedMySQLError)
+	if eErr.Table() != "" {
+		t.Errorf("Table() = %q, want empty", eErr.Table())
+	}
+}
+
+// TestMySQLError_Alias verifies *MySQLError = *wrappedMySQLError (type alias)
+func TestMySQLError_Alias(t *testing.T) {
+	wrapped := wrapMySQLError("orders", "delete", ErrModelNotFound)
+
+	var mErr *MySQLError
+	if !errors.As(wrapped, &mErr) {
+		t.Fatal("errors.As should match *MySQLError (type alias)")
+	}
+	if mErr.Table() != "orders" {
+		t.Errorf("via alias Table() = %q, want %q", mErr.Table(), "orders")
+	}
+	if mErr.Op() != "delete" {
+		t.Errorf("via alias Op() = %q, want %q", mErr.Op(), "delete")
+	}
+}

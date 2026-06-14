@@ -1,0 +1,392 @@
+﻿=== RUN   TestBatchInsert
+--- PASS: TestBatchInsert (0.00s)
+=== RUN   TestBatchInsertEmpty
+--- PASS: TestBatchInsertEmpty (0.00s)
+=== RUN   TestBatchInsertSingle
+--- PASS: TestBatchInsertSingle (0.00s)
+=== RUN   TestBatchInsertCustomTable
+    batch_test.go:86: BatchInsertCustomTable method does not exist
+--- SKIP: TestBatchInsertCustomTable (0.00s)
+=== RUN   TestValidate_Required
+=== RUN   TestValidate_Required/empty_Addr
+=== RUN   TestValidate_Required/whitespace_Addr
+=== RUN   TestValidate_Required/empty_User
+=== RUN   TestValidate_Required/empty_DBName
+=== RUN   TestValidate_Required/valid_minimal
+--- PASS: TestValidate_Required (0.00s)
+    --- PASS: TestValidate_Required/empty_Addr (0.00s)
+    --- PASS: TestValidate_Required/whitespace_Addr (0.00s)
+    --- PASS: TestValidate_Required/empty_User (0.00s)
+    --- PASS: TestValidate_Required/empty_DBName (0.00s)
+    --- PASS: TestValidate_Required/valid_minimal (0.00s)
+=== RUN   TestValidate_PoolSizes
+--- PASS: TestValidate_PoolSizes (0.00s)
+=== RUN   TestNormalize_AllDefaults
+--- PASS: TestNormalize_AllDefaults (0.00s)
+=== RUN   TestNormalize_PartialOverride
+--- PASS: TestNormalize_PartialOverride (0.00s)
+=== RUN   TestNormalize_ZeroIdleConnsTreatedAsExplicit
+--- PASS: TestNormalize_ZeroIdleConnsTreatedAsExplicit (0.00s)
+=== RUN   TestNormalize_EnableQueryLogPropagated
+--- PASS: TestNormalize_EnableQueryLogPropagated (0.00s)
+=== RUN   TestNormalize_ParseTimeBoolHonoured
+--- PASS: TestNormalize_ParseTimeBoolHonoured (0.00s)
+=== RUN   TestNormalize_LocOverride
+--- PASS: TestNormalize_LocOverride (0.00s)
+=== RUN   TestNormalize_SlowThresholdOverride
+--- PASS: TestNormalize_SlowThresholdOverride (0.00s)
+=== RUN   TestNormalize_NegativeMinIdleNotApplied
+--- PASS: TestNormalize_NegativeMinIdleNotApplied (0.00s)
+=== RUN   TestIsValidIdentifier
+=== RUN   TestIsValidIdentifier/single_letter
+=== RUN   TestIsValidIdentifier/alphabetic
+=== RUN   TestIsValidIdentifier/underscore_prefix
+=== RUN   TestIsValidIdentifier/with_underscore
+=== RUN   TestIsValidIdentifier/with_digit
+=== RUN   TestIsValidIdentifier/just_underscore
+=== RUN   TestIsValidIdentifier/mixed_case
+=== RUN   TestIsValidIdentifier/empty
+=== RUN   TestIsValidIdentifier/digit_prefix
+=== RUN   TestIsValidIdentifier/hyphen
+=== RUN   TestIsValidIdentifier/dot
+=== RUN   TestIsValidIdentifier/semicolon_injection
+=== RUN   TestIsValidIdentifier/space
+=== RUN   TestIsValidIdentifier/quote_injection
+=== RUN   TestIsValidIdentifier/sql_injection
+=== RUN   TestIsValidIdentifier/backtick
+--- PASS: TestIsValidIdentifier (0.00s)
+    --- PASS: TestIsValidIdentifier/single_letter (0.00s)
+    --- PASS: TestIsValidIdentifier/alphabetic (0.00s)
+    --- PASS: TestIsValidIdentifier/underscore_prefix (0.00s)
+    --- PASS: TestIsValidIdentifier/with_underscore (0.00s)
+    --- PASS: TestIsValidIdentifier/with_digit (0.00s)
+    --- PASS: TestIsValidIdentifier/just_underscore (0.00s)
+    --- PASS: TestIsValidIdentifier/mixed_case (0.00s)
+    --- PASS: TestIsValidIdentifier/empty (0.00s)
+    --- PASS: TestIsValidIdentifier/digit_prefix (0.00s)
+    --- PASS: TestIsValidIdentifier/hyphen (0.00s)
+    --- PASS: TestIsValidIdentifier/dot (0.00s)
+    --- PASS: TestIsValidIdentifier/semicolon_injection (0.00s)
+    --- PASS: TestIsValidIdentifier/space (0.00s)
+    --- PASS: TestIsValidIdentifier/quote_injection (0.00s)
+    --- PASS: TestIsValidIdentifier/sql_injection (0.00s)
+    --- PASS: TestIsValidIdentifier/backtick (0.00s)
+=== RUN   TestSanitizeIdentifier
+--- PASS: TestSanitizeIdentifier (0.00s)
+=== RUN   TestToSnakeCase
+--- PASS: TestToSnakeCase (0.00s)
+=== RUN   TestGetTableNameFromDest
+=== RUN   TestGetTableNameFromDest/IModel_struct_ptr
+=== RUN   TestGetTableNameFromDest/IModel_slice_ptr
+=== RUN   TestGetTableNameFromDest/plain_struct_ptr_falls_back_to_snake+s
+=== RUN   TestGetTableNameFromDest/plain_slice_ptr_falls_back_to_snake+s
+=== RUN   TestGetTableNameFromDest/non-pointer_struct_still_ok
+=== RUN   TestGetTableNameFromDest/int_returns_empty
+=== RUN   TestGetTableNameFromDest/nil_any-typed_returns_empty
+--- PASS: TestGetTableNameFromDest (0.00s)
+    --- PASS: TestGetTableNameFromDest/IModel_struct_ptr (0.00s)
+    --- PASS: TestGetTableNameFromDest/IModel_slice_ptr (0.00s)
+    --- PASS: TestGetTableNameFromDest/plain_struct_ptr_falls_back_to_snake+s (0.00s)
+    --- PASS: TestGetTableNameFromDest/plain_slice_ptr_falls_back_to_snake+s (0.00s)
+    --- PASS: TestGetTableNameFromDest/non-pointer_struct_still_ok (0.00s)
+    --- PASS: TestGetTableNameFromDest/int_returns_empty (0.00s)
+    --- PASS: TestGetTableNameFromDest/nil_any-typed_returns_empty (0.00s)
+=== RUN   TestWrapMySQLError_NilPassthrough
+--- PASS: TestWrapMySQLError_NilPassthrough (0.00s)
+=== RUN   TestWrapMySQLError_BasicFormat
+--- PASS: TestWrapMySQLError_BasicFormat (0.00s)
+=== RUN   TestWrapMySQLError_UnwrapChain
+--- PASS: TestWrapMySQLError_UnwrapChain (0.00s)
+=== RUN   TestWrapMySQLError_PreservesSentinels
+--- PASS: TestWrapMySQLError_PreservesSentinels (0.00s)
+=== RUN   TestNewQueryLogger_NilConfig
+--- PASS: TestNewQueryLogger_NilConfig (0.00s)
+=== RUN   TestNewQueryLogger_Disabled
+--- PASS: TestNewQueryLogger_Disabled (0.00s)
+=== RUN   TestNewQueryLogger_Enabled
+--- PASS: TestNewQueryLogger_Enabled (0.00s)
+=== RUN   TestIsEnabled_NilReceiver
+--- PASS: TestIsEnabled_NilReceiver (0.00s)
+=== RUN   TestLogQuery_NilReceiver
+--- PASS: TestLogQuery_NilReceiver (0.00s)
+=== RUN   TestLogQuery_DisabledIsNoOp
+--- PASS: TestLogQuery_DisabledIsNoOp (0.00s)
+=== RUN   TestLogQuery_Enabled
+[20:51:54.920][37m銆怚銆慬1.000ms] [rows:1] SELECT * FROM `users` WHERE id = 42[0m
+--- PASS: TestLogQuery_Enabled (0.00s)
+=== RUN   TestLogSlowQuery_AboveThreshold
+[20:51:54.924][33m銆怶銆慬SLOW [200.000ms]] [rows:0] [threshold: 100ms] SELECT 1[0m
+--- PASS: TestLogSlowQuery_AboveThreshold (0.00s)
+=== RUN   TestLogSlowQuery_BelowThresholdIsNoOp
+--- PASS: TestLogSlowQuery_BelowThresholdIsNoOp (0.00s)
+=== RUN   TestLogSlowQuery_NoSlowEnabledIsNoOp
+--- PASS: TestLogSlowQuery_NoSlowEnabledIsNoOp (0.00s)
+=== RUN   TestLogError_NilLogger
+--- PASS: TestLogError_NilLogger (0.00s)
+=== RUN   TestLogError_NilError
+--- PASS: TestLogError_NilError (0.00s)
+=== RUN   TestLogError_RealError
+[20:51:54.924][31m銆怑銆慬ERROR [1.000ms]] SELECT * FROM `users` WHERE x = 'abc'
+Error: syntax error[0m
+--- PASS: TestLogError_RealError (0.00s)
+=== RUN   TestLogTransaction
+[20:51:54.924][37m銆怚銆慬COMMIT] [0.500ms][0m
+--- PASS: TestLogTransaction (0.00s)
+=== RUN   TestLogTransaction_Disabled
+--- PASS: TestLogTransaction_Disabled (0.00s)
+=== RUN   TestFormatDuration
+--- PASS: TestFormatDuration (0.00s)
+=== RUN   TestFormatQuery_NoArgs
+--- PASS: TestFormatQuery_NoArgs (0.00s)
+=== RUN   TestFormatQuery_StringArg
+--- PASS: TestFormatQuery_StringArg (0.00s)
+=== RUN   TestFormatQuery_NilArg
+--- PASS: TestFormatQuery_NilArg (0.00s)
+=== RUN   TestFormatQuery_TimeArg
+--- PASS: TestFormatQuery_TimeArg (0.00s)
+=== RUN   TestFormatQuery_ByteSliceArg
+--- PASS: TestFormatQuery_ByteSliceArg (0.00s)
+=== RUN   TestFormatQuery_BoolArg
+--- PASS: TestFormatQuery_BoolArg (0.00s)
+=== RUN   TestFormatQuery_StringEscape
+--- PASS: TestFormatQuery_StringEscape (0.00s)
+=== RUN   TestFormatTableNames_From
+--- PASS: TestFormatTableNames_From (0.00s)
+=== RUN   TestFormatTableNames_Join
+--- PASS: TestFormatTableNames_Join (0.00s)
+=== RUN   TestFormatTableNames_Into
+--- PASS: TestFormatTableNames_Into (0.00s)
+=== RUN   TestFormatTableNames_Update
+--- PASS: TestFormatTableNames_Update (0.00s)
+=== RUN   TestFormatTableNames_AlreadyQuotedSkipped
+--- PASS: TestFormatTableNames_AlreadyQuotedSkipped (0.00s)
+=== RUN   TestFormatArg_AllTypes
+=== RUN   TestFormatArg_AllTypes/nil
+=== RUN   TestFormatArg_AllTypes/string
+=== RUN   TestFormatArg_AllTypes/empty_string
+=== RUN   TestFormatArg_AllTypes/int
+=== RUN   TestFormatArg_AllTypes/int64
+=== RUN   TestFormatArg_AllTypes/float
+=== RUN   TestFormatArg_AllTypes/bool_true
+=== RUN   TestFormatArg_AllTypes/bool_false
+=== RUN   TestFormatArg_AllTypes/bytes
+--- PASS: TestFormatArg_AllTypes (0.00s)
+    --- PASS: TestFormatArg_AllTypes/nil (0.00s)
+    --- PASS: TestFormatArg_AllTypes/string (0.00s)
+    --- PASS: TestFormatArg_AllTypes/empty_string (0.00s)
+    --- PASS: TestFormatArg_AllTypes/int (0.00s)
+    --- PASS: TestFormatArg_AllTypes/int64 (0.00s)
+    --- PASS: TestFormatArg_AllTypes/float (0.00s)
+    --- PASS: TestFormatArg_AllTypes/bool_true (0.00s)
+    --- PASS: TestFormatArg_AllTypes/bool_false (0.00s)
+    --- PASS: TestFormatArg_AllTypes/bytes (0.00s)
+=== RUN   TestFindIdentifierEnd_BasicCases
+=== RUN   TestFindIdentifierEnd_BasicCases/identifier_at_end
+=== RUN   TestFindIdentifierEnd_BasicCases/identifier_with_space
+=== RUN   TestFindIdentifierEnd_BasicCases/identifier_with_comma
+=== RUN   TestFindIdentifierEnd_BasicCases/identifier_with_closing_paren
+=== RUN   TestFindIdentifierEnd_BasicCases/start_past_end
+=== RUN   TestFindIdentifierEnd_BasicCases/subquery_start
+--- PASS: TestFindIdentifierEnd_BasicCases (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/identifier_at_end (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/identifier_with_space (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/identifier_with_comma (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/identifier_with_closing_paren (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/start_past_end (0.00s)
+    --- PASS: TestFindIdentifierEnd_BasicCases/subquery_start (0.00s)
+=== RUN   TestIsSQLKeywordBoundary
+--- PASS: TestIsSQLKeywordBoundary (0.00s)
+=== RUN   TestPluginInit
+--- PASS: TestPluginInit (0.00s)
+=== RUN   TestPluginStats
+--- PASS: TestPluginStats (0.00s)
+=== RUN   TestContextNilInTable
+--- PASS: TestContextNilInTable (0.00s)
+=== RUN   TestQueryResultPool
+--- PASS: TestQueryResultPool (0.00s)
+=== RUN   TestTransactionBegin
+--- PASS: TestTransactionBegin (0.00s)
+=== RUN   TestDSNBuild
+--- PASS: TestDSNBuild (0.00s)
+=== RUN   TestDSNBuildInvalidTimezone
+--- PASS: TestDSNBuildInvalidTimezone (0.00s)
+=== RUN   TestInsert
+--- PASS: TestInsert (0.00s)
+=== RUN   TestTableSQLInjection
+--- PASS: TestTableSQLInjection (0.00s)
+=== RUN   TestTableValidIdentifier
+--- PASS: TestTableValidIdentifier (0.00s)
+=== RUN   TestORM_Update
+--- PASS: TestORM_Update (0.00s)
+=== RUN   TestORM_Delete
+--- PASS: TestORM_Delete (0.00s)
+=== RUN   TestORM_GetByID_Found
+--- PASS: TestORM_GetByID_Found (0.00s)
+=== RUN   TestORM_GetByID_NotFound
+--- PASS: TestORM_GetByID_NotFound (0.00s)
+=== RUN   TestORM_UpdateByID
+--- PASS: TestORM_UpdateByID (0.00s)
+=== RUN   TestORM_DeleteByID
+--- PASS: TestORM_DeleteByID (0.00s)
+=== RUN   TestORM_Exists_True
+--- PASS: TestORM_Exists_True (0.00s)
+=== RUN   TestORM_Exists_False
+--- PASS: TestORM_Exists_False (0.00s)
+=== RUN   TestORM_Get_Found
+--- PASS: TestORM_Get_Found (0.00s)
+=== RUN   TestORM_Get_NotFound
+--- PASS: TestORM_Get_NotFound (0.00s)
+=== RUN   TestORM_Get_NilDest
+--- PASS: TestORM_Get_NilDest (0.00s)
+=== RUN   TestORM_Select_NilDest
+--- PASS: TestORM_Select_NilDest (0.00s)
+=== RUN   TestORM_ExecReturningID
+--- PASS: TestORM_ExecReturningID (0.00s)
+=== RUN   TestORM_Exec
+--- PASS: TestORM_Exec (0.00s)
+=== RUN   TestORM_Save_Insert
+--- PASS: TestORM_Save_Insert (0.00s)
+=== RUN   TestORM_Save_Update
+--- PASS: TestORM_Save_Update (0.00s)
+=== RUN   TestORM_Save_NilModel
+--- PASS: TestORM_Save_NilModel (0.00s)
+=== RUN   TestORM_First
+--- PASS: TestORM_First (0.00s)
+=== RUN   TestORM_First_UnknownDest
+--- PASS: TestORM_First_UnknownDest (0.00s)
+=== RUN   TestORM_Find
+--- PASS: TestORM_Find (0.00s)
+=== RUN   TestORM_Create
+--- PASS: TestORM_Create (0.00s)
+=== RUN   TestORM_Count
+--- PASS: TestORM_Count (0.00s)
+=== RUN   TestORM_Count_NoWhere
+--- PASS: TestORM_Count_NoWhere (0.00s)
+=== RUN   TestORM_Count_InvalidTable
+--- PASS: TestORM_Count_InvalidTable (0.00s)
+=== RUN   TestORM_Query
+--- PASS: TestORM_Query (0.00s)
+=== RUN   TestORM_GetDB_NilWhenNotStarted
+--- PASS: TestORM_GetDB_NilWhenNotStarted (0.00s)
+=== RUN   TestORM_Model_InvalidTable
+--- PASS: TestORM_Model_InvalidTable (0.00s)
+=== RUN   TestORM_Model_NilModel
+--- PASS: TestORM_Model_NilModel (0.00s)
+=== RUN   TestPoolConfiguration
+--- PASS: TestPoolConfiguration (0.00s)
+=== RUN   TestPoolStop
+[20:51:54.936][37m銆怚銆慬MySQL] disconnected from localhost:3306/test_db[0m
+--- PASS: TestPoolStop (0.00s)
+=== RUN   TestPoolStopIdempotent
+[20:51:54.936][37m銆怚銆慬MySQL] disconnected from localhost:3306/test_db[0m
+[20:51:54.936][37m銆怚銆慬MySQL] disconnected from localhost:3306/test_db[0m
+--- PASS: TestPoolStopIdempotent (0.00s)
+=== RUN   TestPoolContextCancellation
+    pool_test.go:61: requires real database connection
+--- SKIP: TestPoolContextCancellation (0.00s)
+=== RUN   TestPluginStateTransitions
+--- PASS: TestPluginStateTransitions (0.00s)
+=== RUN   TestQueryResultReset
+--- PASS: TestQueryResultReset (0.00s)
+=== RUN   TestBuildQueryCaching
+--- PASS: TestBuildQueryCaching (0.00s)
+=== RUN   TestQueryWhere
+--- PASS: TestQueryWhere (0.00s)
+=== RUN   TestQueryJoin
+--- PASS: TestQueryJoin (0.00s)
+=== RUN   TestQueryOrder
+--- PASS: TestQueryOrder (0.00s)
+=== RUN   TestQueryLimit
+--- PASS: TestQueryLimit (0.00s)
+=== RUN   TestQueryOffset
+--- PASS: TestQueryOffset (0.00s)
+=== RUN   TestQueryGroupBy
+--- PASS: TestQueryGroupBy (0.00s)
+=== RUN   TestQuerySelect
+--- PASS: TestQuerySelect (0.00s)
+=== RUN   TestQueryChain
+--- PASS: TestQueryChain (0.00s)
+=== RUN   TestQueryFirstNotFound
+--- PASS: TestQueryFirstNotFound (0.00s)
+=== RUN   TestQueryFindEmpty
+--- PASS: TestQueryFindEmpty (0.00s)
+=== RUN   TestBuildQuery_InsertNewWhere
+--- PASS: TestBuildQuery_InsertNewWhere (0.00s)
+=== RUN   TestBuildQuery_AppendToExistingWhere
+--- PASS: TestBuildQuery_AppendToExistingWhere (0.00s)
+=== RUN   TestBuildQuery_AppendToExistingWhereBeforeGroupBy
+--- PASS: TestBuildQuery_AppendToExistingWhereBeforeGroupBy (0.00s)
+=== RUN   TestBuildQuery_AppendMultipleWheresToExisting
+--- PASS: TestBuildQuery_AppendMultipleWheresToExisting (0.00s)
+=== RUN   TestBuildQuery_AppendGroupByToExisting
+--- PASS: TestBuildQuery_AppendGroupByToExisting (0.00s)
+=== RUN   TestBuildQuery_AppendHavingToExisting
+--- PASS: TestBuildQuery_AppendHavingToExisting (0.00s)
+=== RUN   TestBuildQuery_AppendOrderByToExisting
+--- PASS: TestBuildQuery_AppendOrderByToExisting (0.00s)
+=== RUN   TestBuildQuery_ReplaceLimitToExisting
+--- PASS: TestBuildQuery_ReplaceLimitToExisting (0.00s)
+=== RUN   TestBuildQuery_ReplaceOffsetToExisting
+--- PASS: TestBuildQuery_ReplaceOffsetToExisting (0.00s)
+=== RUN   TestBuildQuery_JoinAndWhereExisting
+--- PASS: TestBuildQuery_JoinAndWhereExisting (0.00s)
+=== RUN   TestNewFieldScanner_IModel
+--- PASS: TestNewFieldScanner_IModel (0.00s)
+=== RUN   TestNewFieldScanner_NilModel
+--- PASS: TestNewFieldScanner_NilModel (0.00s)
+=== RUN   TestNewFieldScanner_NilPtr
+--- PASS: TestNewFieldScanner_NilPtr (0.00s)
+=== RUN   TestDBFields
+--- PASS: TestDBFields (0.00s)
+=== RUN   TestDBFields_EmptyTable
+--- PASS: TestDBFields_EmptyTable (0.00s)
+=== RUN   TestPrimaryKey_Found
+--- PASS: TestPrimaryKey_Found (0.00s)
+=== RUN   TestPrimaryKey_NotFound
+--- PASS: TestPrimaryKey_NotFound (0.00s)
+=== RUN   TestBuildInsertSQL
+--- PASS: TestBuildInsertSQL (0.00s)
+=== RUN   TestBuildUpdateSQL
+--- PASS: TestBuildUpdateSQL (0.00s)
+=== RUN   TestBuildUpdateByIDSQL_WithExplicitID
+--- PASS: TestBuildUpdateByIDSQL_WithExplicitID (0.00s)
+=== RUN   TestBuildUpdateByIDSQL_NilUsesModelID
+--- PASS: TestBuildUpdateByIDSQL_NilUsesModelID (0.00s)
+=== RUN   TestBuildUpdateByIDSQL_NoPKFails
+--- PASS: TestBuildUpdateByIDSQL_NoPKFails (0.00s)
+=== RUN   TestBuildDeleteSQL_NoWhere
+--- PASS: TestBuildDeleteSQL_NoWhere (0.00s)
+=== RUN   TestBuildDeleteSQL_WithWhere
+--- PASS: TestBuildDeleteSQL_WithWhere (0.00s)
+=== RUN   TestBuildDeleteByIDSQL
+--- PASS: TestBuildDeleteByIDSQL (0.00s)
+=== RUN   TestBuildDeleteByIDSQL_NoPKFails
+--- PASS: TestBuildDeleteByIDSQL_NoPKFails (0.00s)
+=== RUN   TestBuildSelectByIDSQL
+--- PASS: TestBuildSelectByIDSQL (0.00s)
+=== RUN   TestBuildSelectByIDSQL_FallbackToId
+--- PASS: TestBuildSelectByIDSQL_FallbackToId (0.00s)
+=== RUN   TestFieldMetaCache
+--- PASS: TestFieldMetaCache (0.00s)
+=== RUN   TestFieldMetaCache_DifferentTypes
+--- PASS: TestFieldMetaCache_DifferentTypes (0.00s)
+=== RUN   TestFieldInfo_NamedType
+--- PASS: TestFieldInfo_NamedType (0.00s)
+=== RUN   TestFieldMeta_PKColumnRecorded
+--- PASS: TestFieldMeta_PKColumnRecorded (0.00s)
+=== RUN   TestPrimaryKey_ValueReflectsModelValue
+--- PASS: TestPrimaryKey_ValueReflectsModelValue (0.00s)
+=== RUN   TestTransactionCommit
+--- PASS: TestTransactionCommit (0.00s)
+=== RUN   TestTransactionRollback
+--- PASS: TestTransactionRollback (0.00s)
+=== RUN   TestTransactionQuery
+--- PASS: TestTransactionQuery (0.00s)
+=== RUN   TestTransactionExec
+--- PASS: TestTransactionExec (0.00s)
+=== RUN   TestTransactionRollbackDone
+--- PASS: TestTransactionRollbackDone (0.00s)
+=== RUN   TestTransactionCommitDone
+--- PASS: TestTransactionCommitDone (0.00s)
+PASS
+ok  	github.com/adnilis/wma/plugins/mysql	1.062s

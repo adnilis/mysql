@@ -187,6 +187,33 @@ func TestORM_Get_NotFound(t *testing.T) {
 	}
 }
 
+// TestORM_Get_NotFound_HasWrapContext 验证 R01 错误统一:Get 未命中也走 wrapMySQLError
+// 调用方可通过 errors.As 拿到 *MySQLError,读取 Op() 判断操作类型
+func TestORM_Get_NotFound_HasWrapContext(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery("SELECT \\* FROM test_models").
+		WithArgs(99).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+	m := &testModel{}
+	err := plugin.Get(context.Background(), m, "SELECT * FROM test_models WHERE id = ?", 99)
+
+	// 必须能 errors.Is 找到 ErrModelNotFound
+	if !errors.Is(err, ErrModelNotFound) {
+		t.Errorf("errors.Is should match ErrModelNotFound, got %v", err)
+	}
+
+	// 必须能 errors.As 拿到 MySQLError,且 Op() == "get"
+	var mErr *MySQLError
+	if !errors.As(err, &mErr) {
+		t.Fatal("errors.As should match *MySQLError")
+	}
+	if mErr.Op() != "get" {
+		t.Errorf("Op() = %q, want %q", mErr.Op(), "get")
+	}
+}
+
 // TestORM_Get_NilDest 验证 nil dest 防 panic
 func TestORM_Get_NilDest(t *testing.T) {
 	plugin, _ := newTestPlugin(t)

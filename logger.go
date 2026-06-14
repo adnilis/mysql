@@ -111,6 +111,7 @@ func formatDuration(duration time.Duration) string {
 //   - `?` 占位符替换是朴素的字符串扫描，无法识别字符串字面量内的 `?`
 //     （例如 `WHERE name = '?'` 会被错误替换）
 //   - 同样无法识别注释、子查询深嵌套等复杂情形
+//
 // 不要用本函数的输出做安全审计或 SQL 解析。
 func (ql *QueryLogger) formatQuery(query string, args ...any) string {
 	if len(args) == 0 {

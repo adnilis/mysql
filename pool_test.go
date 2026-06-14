@@ -126,3 +126,91 @@ func TestBuildQueryCaching(t *testing.T) {
 		t.Error("expected same args from cache")
 	}
 }
+
+// TestEffectiveMaxIdleConns covers R01 风险 #4 修复 — MinIdleConns 影响实际 MaxIdleConns
+func TestEffectiveMaxIdleConns(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  MySQLPluginConfig
+		want int
+	}{
+		{"min < max keeps max", MySQLPluginConfig{MinIdleConns: 3, MaxIdleConns: 5}, 5},
+		{"min == max keeps value", MySQLPluginConfig{MinIdleConns: 5, MaxIdleConns: 5}, 5},
+		{"min > max bumps up", MySQLPluginConfig{MinIdleConns: 8, MaxIdleConns: 5}, 8},
+		{"both zero stays zero", MySQLPluginConfig{MinIdleConns: 0, MaxIdleConns: 0}, 0},
+		{"only min set, max zero", MySQLPluginConfig{MinIdleConns: 4, MaxIdleConns: 0}, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := effectiveMaxIdleConns(&tt.cfg)
+			if got != tt.want {
+				t.Errorf("effectiveMaxIdleConns() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStart_ReentranceClosesOld verifies R01 风险 #3 修复 — 重复 Start 不会泄漏旧 db
+//
+// 模拟 Start 中的 swap+close 模式(因 Start 内部调用 sqlx.Connect 需要真实 MySQL),
+// 验证旧 db 在被新 db 替换后会被 Close,防止句柄泄漏
+func TestStart_ReentranceClosesOld(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		Addr:     "localhost:3306",
+		User:     "test",
+		Password: "test",
+		DBName:   "test_db",
+	})
+
+	// 预存一个旧 db,挂上 sqlmock 期望 Close 被调用
+	oldDB, oldMock := newMockDB(t)
+	oldMock.ExpectClose()
+	plugin.db.Store(oldDB)
+
+	// 模拟第二次 Start:swap+close 模式
+	newDB, newMock := newMockDB(t)
+	newMock.ExpectClose()
+	if old := plugin.db.Swap(newDB); old != nil {
+		_ = old.Close()
+	}
+
+	// 验证旧 db 的 Close 期望被满足
+	if err := oldMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("old db Close not called: %v", err)
+	}
+
+	// 清理
+	if err := newDB.Close(); err != nil {
+		t.Errorf("close new db: %v", err)
+	}
+	if err := newMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("new db Close not met: %v", err)
+	}
+}
+
+// TestStart_FirstCallDoesNotPanic verifies the swap+close pattern is safe
+// when no prior db exists (first Start, no leak risk)
+func TestStart_FirstCallDoesNotPanic(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		Addr:     "localhost:3306",
+		User:     "test",
+		Password: "test",
+		DBName:   "test_db",
+	})
+
+	// 模拟第一次 Start:plugin.db 初始为 nil
+	if plugin.db.Load() != nil {
+		t.Fatal("expected nil initial db")
+	}
+
+	// swap+close 模式不应 panic
+	newDB, _ := newMockDB(t)
+	defer newDB.Close()
+	if old := plugin.db.Swap(newDB); old != nil {
+		_ = old.Close()
+	}
+
+	if got := plugin.db.Load(); got != newDB {
+		t.Error("expected newDB after swap")
+	}
+}

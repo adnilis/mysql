@@ -77,11 +77,3 @@ func TestBatchInsertSingle(t *testing.T) {
 		t.Errorf("expected 1 id, got %d", len(ids))
 	}
 }
-
-// TestBatchInsertCustomTable tests batch insert with custom table name
-// Note: The actual method may not exist, this is a placeholder
-func TestBatchInsertCustomTable(t *testing.T) {
-	// Plugin does not have BatchInsertCustomTable method
-	// Skipping this test
-	t.Skip("BatchInsertCustomTable method does not exist")
-}

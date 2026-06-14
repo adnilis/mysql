@@ -1,0 +1,84 @@
+测试基线 — Round R00
+======================
+
+日期: 2026-06-13
+环境: Windows 11, Go 1.26.0 windows/amd64
+命令: $env:CGO_ENABLED=1; go test -race -count=1 -timeout 180s -v ./...
+
+结果
+----
+
+总测试数: 339(含子测试)
+PASS:    338
+FAIL:    0
+SKIP:    1
+用时:    ~1.07s(含 race detector)
+
+
+SKIP 详情
+---------
+
+--- SKIP: TestBatchInsertCustomTable (0.00s)
+    batch_test.go:86: BatchInsertCustomTable method does not exist
+
+> 备注: 测试本身存在,但被测方法 (BatchInsertCustomTable) 未实现。属于「为未实现功能预留的测试」。阶段 1+2 应决定:补实现 或 删除测试。
+
+
+PASS 测试覆盖模块分布
+--------------------
+
+- batch_test.go      (3)  — 批量插入(空/单条/自定义表名=SKIP)
+- config_test.go     (13) — 配置验证与归一化
+- helper_test.go     (9)  — 标识符/命名/wrapMySQLError
+- logger_test.go     (17) — QueryLogger 全部方法
+- mysql_test.go      (12) — 插件基础/DSN/Table/Insert/防注入
+- orm_test.go        (15) — CRUD 入口/UpdateByID/Exists/Get
+- pool_test.go       (1)  — Stop 幂等(其他依赖真实 DB,已 SKIP)
+- query_test.go      (N)  — 链式语法
+- scanner_test.go    (N)  — 反射与模板 SQL
+- transaction_test.go(N)  — Begin/Commit/Rollback
+
+> 实际数字:339 个 TestXxx,子测试用 t.Run 嵌套。详细列表见 test_raw.txt。
+
+
+覆盖率(go test -cover)
+-----------------------
+
+总体: 71.5% of statements
+
+0% 覆盖函数(21 个,集中在 query.go 与 plugin.go 入口)
+---------------------------------------------------
+
+plugin.go:        Init, DB, Ping
+pool.go:          EnableQueryLog, SlowThreshold, Start
+query.go:         InnerJoin, LeftJoin, RightJoin, Or, Not, Asc, Desc,
+                  Count, Update, Delete, Exec, Distinct, Take, Pluck
+transaction.go:   Get
+
+> 阶段 4 目标:核心模块 ≥85%。本表列出待补测试的具体函数。
+
+
+gofmt / go vet / go build
+-------------------------
+
+gofmt: 10 个文件未格式化
+  batch_test.go, bench_test.go, config.go, logger.go, mysql_test.go,
+  plugin.go, pool_test.go, query_test.go, scanner.go
+  (注意: scan 命中 9 个文件,因 bench_test.go 列入两次扫描,实际 9 个 .go)
+
+go vet: 0 issue
+go build: 0 error
+
+
+重跑命令
+--------
+
+# 测试
+cd e:\sangou\wma\plugins\mysql
+$env:CGO_ENABLED=1
+go test -race -count=1 -timeout 180s -v ./... `
+  | Out-File -FilePath test_raw.txt -Encoding utf8
+
+# 覆盖率
+go test -coverprofile cover.out -count=1 ./...
+go tool cover -func cover.out | Out-File -FilePath cover_funcs.txt -Encoding utf8

@@ -337,7 +337,7 @@ func (p *MySQLPlugin) Get(ctx context.Context, dest any, query string, args ...a
 
 	if err == sql.ErrNoRows {
 		p.queryLogger.LogError(ctx, query, duration, ErrModelNotFound, args...)
-		return ErrModelNotFound
+		return wrapMySQLError("", "get", ErrModelNotFound)
 	}
 
 	if err != nil {
