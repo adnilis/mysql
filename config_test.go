@@ -237,3 +237,95 @@ func TestNormalize_NegativeMinIdleNotApplied(t *testing.T) {
 		t.Errorf("Negative MinIdleConns leaked through normalization: got %d", cfg.MinIdleConns)
 	}
 }
+
+// TestNormalize_TableDriven 表驱动化 R03 示范:
+// 将多个"小 quirk"测试合并为表驱动,便于后续扩展新场景
+func TestNormalize_TableDriven(t *testing.T) {
+	tests := []struct {
+		name  string
+		input MySQLPluginConfig
+		check func(t *testing.T, got MySQLPluginConfig)
+	}{
+		{
+			name:  "EnableQueryLog=true 保留",
+			input: MySQLPluginConfig{EnableQueryLog: true},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if !got.EnableQueryLog {
+					t.Error("EnableQueryLog=true was dropped")
+				}
+			},
+		},
+		{
+			name:  "EnableQueryLog=false 保留",
+			input: MySQLPluginConfig{EnableQueryLog: false},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.EnableQueryLog {
+					t.Error("EnableQueryLog=false was overridden to true")
+				}
+			},
+		},
+		{
+			name:  "ParseTime=true 保留",
+			input: MySQLPluginConfig{ParseTime: true},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if !got.ParseTime {
+					t.Error("ParseTime=true was dropped")
+				}
+			},
+		},
+		{
+			name:  "ParseTime=false 保留(覆盖默认 true)",
+			input: MySQLPluginConfig{ParseTime: false},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.ParseTime {
+					t.Error("ParseTime=false was overridden to true")
+				}
+			},
+		},
+		{
+			name:  "Loc=UTC 覆盖",
+			input: MySQLPluginConfig{Loc: "UTC"},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.Loc != "UTC" {
+					t.Errorf("Loc override: got %q", got.Loc)
+				}
+			},
+		},
+		{
+			name:  "SlowThreshold=500 覆盖",
+			input: MySQLPluginConfig{SlowThreshold: 500},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.SlowThreshold != 500 {
+					t.Errorf("SlowThreshold override: got %d", got.SlowThreshold)
+				}
+			},
+		},
+		{
+			name:  "MinIdleConns=-5 被守卫拦截(回退默认)",
+			input: MySQLPluginConfig{MinIdleConns: -5},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.MinIdleConns != defaultMySQLMinIdleConns {
+					t.Errorf("Negative MinIdleConns leaked: got %d, want default %d",
+						got.MinIdleConns, defaultMySQLMinIdleConns)
+				}
+			},
+		},
+		{
+			name:  "MinIdleConns=0 视为显式(不回退默认)",
+			input: MySQLPluginConfig{MinIdleConns: 0},
+			check: func(t *testing.T, got MySQLPluginConfig) {
+				if got.MinIdleConns != 0 {
+					t.Errorf("Zero MinIdleConns treated as default: got %d, want 0", got.MinIdleConns)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := tt.input
+			got := normalizeMySQLPluginConfig(&input)
+			tt.check(t, got)
+		})
+	}
+}

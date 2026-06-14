@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +104,82 @@ func TestQueryResultReset(t *testing.T) {
 	}
 	if qr.dirty != false {
 		t.Error("expected dirty=false")
+	}
+}
+
+// TestPluginDB_BeforeStart covers R03 补 0% 函数 — DB() 在 Start 前应返回 nil
+func TestPluginDB_BeforeStart(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		Addr:     "localhost:3306",
+		User:     "test",
+		Password: "test",
+		DBName:   "test_db",
+	})
+	if got := plugin.DB(); got != nil {
+		t.Errorf("DB() before Start should be nil, got %v", got)
+	}
+}
+
+// TestPluginPing_BeforeStart covers R03 补 0% 函数 — Ping() 在 Start 前应返回错误
+func TestPluginPing_BeforeStart(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		Addr:     "localhost:3306",
+		User:     "test",
+		Password: "test",
+		DBName:   "test_db",
+	})
+	err := plugin.Ping(context.Background())
+	if err == nil {
+		t.Error("Ping() before Start should return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("expected 'not initialized' error, got: %v", err)
+	}
+}
+
+// TestPluginPing_AfterStart covers R03 补 0% 函数 — Ping() 在 Start 后调用 db.Ping
+func TestPluginPing_AfterStart(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+	mock.ExpectPing()
+
+	if err := plugin.Ping(context.Background()); err != nil {
+		t.Errorf("Ping() after Start should succeed, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestPluginInit_ValidConfig covers R03 补 0% 函数 — Init() 验证配置
+func TestPluginInit_ValidConfig(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		Addr:     "localhost:3306",
+		User:     "test",
+		Password: "test",
+		DBName:   "test_db",
+	})
+	if err := plugin.Init(nil); err != nil {
+		t.Errorf("Init() with valid config should succeed, got: %v", err)
+	}
+	if plugin.app != nil {
+		t.Error("Init(nil) should leave app nil (no real wma.App available in unit test)")
+	}
+}
+
+// TestPluginInit_InvalidConfig covers R03 补 0% 函数 — Init() 拒绝无效配置
+//
+// 注意:NewMySQLPlugin 会调用 normalizeMySQLPluginConfig,空 Addr 会被填充为
+// defaultMySQLAddr = "localhost:3306"。因此 User 缺失先于 Addr 被检测。
+func TestPluginInit_InvalidConfig(t *testing.T) {
+	plugin := NewMySQLPlugin("test", &MySQLPluginConfig{
+		// Addr 会被默认填充,User/DBName 仍空 → Validate 命中 User
+	})
+	err := plugin.Init(nil)
+	if err == nil {
+		t.Error("Init() with invalid config should return error, got nil")
+	}
+	if !errors.Is(err, errMySQLUserRequired) {
+		t.Errorf("expected errMySQLUserRequired, got: %v", err)
 	}
 }
 
