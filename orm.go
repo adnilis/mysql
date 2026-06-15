@@ -5,16 +5,28 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 )
 
 // logQ 内部助手：组装 "[OP] query" 前缀，统一通过 LogQuery 落盘
 // 调用方传入 op 形如 "INSERT" / "UPDATE" / "DELETE" / "EXEC" / "COUNT" / "EXISTS"
+// R06:同步更新内存级指标(query / affected)
 func (p *MySQLPlugin) logQ(ctx context.Context, op, query string, duration time.Duration, rows int64, args ...any) {
-	if p.queryLogger == nil {
-		return
+	if p.queryLogger != nil {
+		p.queryLogger.LogQuery(ctx, "["+op+"] "+query, duration, rows, args...)
 	}
-	p.queryLogger.LogQuery(ctx, "["+op+"] "+query, duration, rows, args...)
+	// 内存级指标:始终更新(无论 queryLogger 是否启用,这样 Stats() 才有数据)
+	switch op {
+	case "SELECT", "FIND", "FIRST", "TAKE", "PLUCK", "DISTINCT", "GET":
+		p.metricRowsRead.Add(rows)
+	default:
+		p.metricRowsAffected.Add(rows)
+	}
+	p.metricQueryTotal.Add(1)
+	if ql := p.queryLogger; ql != nil && ql.slowEnabled && ql.config.SlowThreshold() > 0 && duration.Milliseconds() >= ql.config.SlowThreshold() {
+		p.metricQuerySlow.Add(1)
+	}
 }
 
 // Begin 开启事务
@@ -99,6 +111,8 @@ func (p *MySQLPlugin) Insert(ctx context.Context, model IModel) (int64, error) {
 	if err != nil {
 		return 0, wrapMySQLError(scanner.table, "insert", err)
 	}
+	// values 来自 valsPool,ExecContext 后归还
+	defer valsPool.Put(&values)
 
 	start := time.Now()
 	result, err := db.ExecContext(ctx, query, values...)
@@ -133,6 +147,7 @@ func (p *MySQLPlugin) Update(ctx context.Context, model IModel, where string, ar
 	if err != nil {
 		return 0, wrapMySQLError(scanner.table, "update", err)
 	}
+	defer valsPool.Put(&values)
 
 	query += " WHERE " + where
 	// 复制以避免修改调用方传入的 args 底层数组
@@ -203,6 +218,9 @@ func (p *MySQLPlugin) GetByID(ctx context.Context, model IModel, id any) error {
 
 	scanner := newFieldScanner(model)
 	query := scanner.buildSelectByIDSQL()
+	if query == "" {
+		return wrapMySQLError(scanner.table, "select", ErrInvalidModel)
+	}
 
 	start := time.Now()
 	err = db.GetContext(ctx, model, query, id)
@@ -235,6 +253,7 @@ func (p *MySQLPlugin) UpdateByID(ctx context.Context, model IModel, id any) (int
 	if err != nil {
 		return 0, wrapMySQLError(scanner.table, "update", err)
 	}
+	defer valsPool.Put(&values)
 
 	start := time.Now()
 	result, err := db.ExecContext(ctx, query, values...)
@@ -519,4 +538,231 @@ func (p *MySQLPlugin) First(ctx context.Context, dest any, id any) error {
 // 用法：var users []User; orm.Find(ctx, &users, "age > ?", 18)
 func (p *MySQLPlugin) Find(ctx context.Context, dest any, query string, args ...any) error {
 	return p.Select(ctx, dest, query, args...)
+}
+
+// SaveOnConflict IModel 版 upsert(MySQL INSERT ... ON DUPLICATE KEY UPDATE)
+//
+// 适用场景:计数器/用户元数据/配置 等需要"有则更新、无则插入"的单条写入,
+// 替代 DAO 中先 SELECT 检查再 INSERT/UPDATE 的两段式样板。
+//
+// 参数:
+//   - model       : 实现 IModel 的 Go 指针
+//   - conflictCols: 触发 ON DUPLICATE KEY 的列(必须有 UNIQUE/PRIMARY 约束);
+//     为空时使用 db:"<col>,pk" 标记的列;无标记则用 "id" 兜底
+//
+// 返回:sql.Result.RowsAffected(1=插入/2=更新/0=无变化)
+func (p *MySQLPlugin) SaveOnConflict(ctx context.Context, model IModel, conflictCols ...string) (int64, error) {
+	if model == nil {
+		return 0, ErrInvalidModel
+	}
+	scanner := newFieldScanner(model)
+	if scanner.table == "" {
+		return 0, wrapMySQLError("", "save on conflict", ErrInvalidModel)
+	}
+	if !isValidIdentifier(scanner.table) {
+		return 0, wrapMySQLError(scanner.table, "save on conflict", ErrInvalidModel)
+	}
+	if scanner.meta == nil || len(scanner.meta.columns) == 0 {
+		return 0, wrapMySQLError(scanner.table, "save on conflict", fmt.Errorf("no columns for model"))
+	}
+
+	// 确定 conflict 列:参数优先,否则用 meta.pkColumn,否则 "id"
+	pk := scanner.meta.pkColumn
+	if pk == "" {
+		pk = "id"
+	}
+	if len(conflictCols) == 0 {
+		conflictCols = []string{pk}
+	}
+	// 校验
+	conflictSet := make(map[string]bool, len(conflictCols))
+	for _, c := range conflictCols {
+		if !isValidIdentifier(c) {
+			return 0, wrapMySQLError(scanner.table, "save on conflict", fmt.Errorf("invalid conflict column: %s", c))
+		}
+		conflictSet[c] = true
+	}
+
+	// 构造 INSERT INTO t (cols) VALUES (?,?,?) ON DUPLICATE KEY UPDATE col = VALUES(col), ...
+	// update 列 = 所有列 - conflictCols
+	var sb strings.Builder
+	sb.Grow(64 + len(scanner.table) + len(scanner.meta.columns)*12 + len(conflictCols)*8)
+	sb.WriteString(scanner.meta.insertSQL)
+	sb.WriteString(" ON DUPLICATE KEY UPDATE ")
+	first := true
+	for _, col := range scanner.meta.columns {
+		if conflictSet[col] {
+			continue
+		}
+		if !first {
+			sb.WriteString(", ")
+		}
+		first = false
+		sb.WriteString(col)
+		sb.WriteString(" = VALUES(")
+		sb.WriteString(col)
+		sb.WriteString(")")
+	}
+	if first {
+		// 所有列都是 conflict 列,等价于 INSERT IGNORE
+		sb.Reset()
+		sb.WriteString(strings.Replace(scanner.meta.insertSQL, "INSERT INTO", "INSERT IGNORE INTO", 1))
+	}
+	query := sb.String()
+
+	// 取 vals
+	query2, values, err := scanner.buildInsertSQL()
+	if err != nil {
+		return 0, wrapMySQLError(scanner.table, "save on conflict", err)
+	}
+	defer valsPool.Put(&values)
+	_ = query2
+
+	db, err := p.getDB()
+	if err != nil {
+		return 0, err
+	}
+
+	start := time.Now()
+	result, err := db.ExecContext(ctx, query, values...)
+	duration := time.Since(start)
+	if err != nil {
+		p.queryLogger.LogError(ctx, query, duration, err, values...)
+		return 0, wrapMySQLError(scanner.table, "save on conflict", err)
+	}
+	affected, _ := result.RowsAffected()
+	p.logQ(ctx, "SAVE_ON_CONFLICT", query, duration, affected, values...)
+	return affected, nil
+}
+
+// Upsert 通用 upsert(MySQL INSERT ... ON DUPLICATE KEY UPDATE)
+//
+// 适用场景:配置表/计数器表/用户元数据 等需要"有则更新、无则插入"的高频写入;
+// 替代 DAO 中先 SELECT 检查再 INSERT/UPDATE 的两段式样板。
+//
+// 参数:
+//   - table    : 表名(已通过 isValidIdentifier 校验)
+//   - columns  : 列名切片
+//   - rows     : 每行参数,每行长度必须 == len(columns)
+//   - updateCols: 冲突时更新的列(空切片 = 更新除 PK 外所有列)
+//   - chunkSize: 每条 INSERT 的行数(0 = 默认 200)
+//
+// 返回:总影响行数(累加各 chunk 的 RowsAffected;含 1=插入/2=更新的语义值)
+//
+// 限制:依赖表上 UNIQUE/PRIMARY KEY 约束触发 ON DUPLICATE KEY;
+// 单条 INSERT 体积受 max_allowed_packet 约束,与 BatchExec 同。
+func (p *MySQLPlugin) Upsert(ctx context.Context, table string, columns []string, rows [][]any, updateCols []string, chunkSize int) (int64, error) {
+	if !isValidIdentifier(table) {
+		return 0, wrapMySQLError(table, "upsert", ErrInvalidModel)
+	}
+	if len(columns) == 0 {
+		return 0, wrapMySQLError(table, "upsert", fmt.Errorf("columns must not be empty"))
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = 200
+	}
+
+	// 确定要更新的列(空 = 默认所有非 PK 列;这里简化:若 updateCols 为空则全列更新)
+	updateClause := ""
+	if len(updateCols) > 0 {
+		var sb strings.Builder
+		for i, col := range updateCols {
+			if !isValidIdentifier(col) {
+				return 0, wrapMySQLError(table, "upsert", fmt.Errorf("invalid update column: %s", col))
+			}
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(col)
+			sb.WriteString(" = VALUES(")
+			sb.WriteString(col)
+			sb.WriteString(")")
+		}
+		updateClause = sb.String()
+	} else {
+		// 默认更新除 PK 外的所有列
+		var sb strings.Builder
+		first := true
+		for _, col := range columns {
+			if !isValidIdentifier(col) {
+				return 0, wrapMySQLError(table, "upsert", fmt.Errorf("invalid column: %s", col))
+			}
+			// 跳过可能的 PK 列(id / *id)
+			if col == "id" || col == "ID" {
+				continue
+			}
+			if !first {
+				sb.WriteString(", ")
+			}
+			first = false
+			sb.WriteString(col)
+			sb.WriteString(" = VALUES(")
+			sb.WriteString(col)
+			sb.WriteString(")")
+		}
+		updateClause = sb.String()
+	}
+
+	db, err := p.getDB()
+	if err != nil {
+		return 0, err
+	}
+
+	rowPlaceholder := "(" + strings.TrimRight(strings.Repeat("?,", len(columns)), ",") + ")"
+	colList := strings.Join(columns, ", ")
+
+	var totalAffected int64
+	for start := 0; start < len(rows); start += chunkSize {
+		end := start + chunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+
+		for i, row := range chunk {
+			if len(row) != len(columns) {
+				return totalAffected, wrapMySQLError(table, "upsert",
+					fmt.Errorf("row %d: expected %d columns, got %d", i, len(columns), len(row)))
+			}
+		}
+
+		var sb strings.Builder
+		sb.Grow(40 + len(table) + len(colList) + len(chunk)*(len(rowPlaceholder)+2) + len(updateClause))
+		sb.WriteString("INSERT INTO ")
+		sb.WriteString(table)
+		sb.WriteString(" (")
+		sb.WriteString(colList)
+		sb.WriteString(") VALUES ")
+		for i := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(rowPlaceholder)
+		}
+		sb.WriteString(" ON DUPLICATE KEY UPDATE ")
+		sb.WriteString(updateClause)
+		query := sb.String()
+
+		args := make([]any, 0, len(chunk)*len(columns))
+		for _, row := range chunk {
+			args = append(args, row...)
+		}
+
+		t := time.Now()
+		result, err := db.ExecContext(ctx, query, args...)
+		duration := time.Since(t)
+
+		if err != nil {
+			p.queryLogger.LogError(ctx, query, duration, err, args...)
+			return totalAffected, wrapMySQLError(table, "upsert", err)
+		}
+		affected, _ := result.RowsAffected()
+		totalAffected += affected
+		p.logQ(ctx, "UPSERT", query, duration, affected, args...)
+	}
+
+	return totalAffected, nil
 }

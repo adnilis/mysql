@@ -14,6 +14,16 @@ type fieldInfo struct {
 	fieldIdx int    // 在结构体中的字段索引
 }
 
+// valsPool 复用 buildInsertSQL/buildUpdateSQL/buildUpdateByIDSQL 的 []any 缓冲
+// R05 启用:由 orm.go::Insert/Update/UpdateByID 在 db.ExecContext 后
+// defer valsPool.Put(&vals) 归还,消除写路径 1 alloc/call
+var valsPool = sync.Pool{
+	New: func() any {
+		s := make([]any, 0, 16)
+		return &s
+	},
+}
+
 // fieldMeta 类型元数据缓存
 // 缓存每种类型的字段信息与预构建的 SQL 模板，避免重复反射扫描与重复拼接
 type fieldMeta struct {
@@ -59,14 +69,24 @@ func getFieldMeta(t reflect.Type) *fieldMeta {
 			continue
 		}
 
-		// 记录字段信息
-		meta.fieldInfos = append(meta.fieldInfos, fieldInfo{tag: tag, fieldIdx: i})
-		meta.columns = append(meta.columns, tag)
+		// 解析 db tag 可选主键标记:db:"col,pk" 或 db:"col,primary" 显式声明
+		// 向后兼容:仅 db:"id"(无逗号)也识别为主键(历史约定)
+		name, opt, _ := strings.Cut(tag, ",")
+		name = strings.TrimSpace(name)
+		opt = strings.ToLower(strings.TrimSpace(opt))
 
-		// 识别主键：db:"id" 是约定的主键标签
-		if tag == "id" {
+		// 记录字段信息(以 name 为列名,不含 pk 选项)
+		meta.fieldInfos = append(meta.fieldInfos, fieldInfo{tag: name, fieldIdx: i})
+		meta.columns = append(meta.columns, name)
+
+		// 识别主键:优先级 db:"col,pk" / db:"col,primary" > db:"id" 约定
+		isPK := opt == "pk" || opt == "primary"
+		if !isPK && name == "id" && meta.idIndex < 0 {
+			isPK = true
+		}
+		if isPK {
 			meta.idIndex = i
-			meta.pkColumn = tag
+			meta.pkColumn = name
 		}
 	}
 
@@ -262,14 +282,16 @@ func (fs *fieldScanner) primaryKey() (col string, val any, ok bool) {
 // buildInsertSQL 构建 INSERT SQL
 // 返回：INSERT INTO table (col1, col2, ...) VALUES (?, ?, ...)
 // SQL 模板已在 fieldMeta 中预构建，此处仅反射填充 vals
+// vals 来自 valsPool,调用方应在 ExecContext 后 defer valsPool.Put(&vals)
 func (fs *fieldScanner) buildInsertSQL() (string, []any, error) {
 	if fs.meta == nil || len(fs.meta.columns) == 0 {
 		return "", nil, fmt.Errorf("no columns to insert for table %s", fs.table)
 	}
 
-	vals := make([]any, len(fs.meta.fieldInfos))
-	for i, info := range fs.meta.fieldInfos {
-		vals[i] = fs.modelVal.Field(info.fieldIdx).Interface()
+	vp := valsPool.Get().(*[]any)
+	vals := (*vp)[:0]
+	for _, info := range fs.meta.fieldInfos {
+		vals = append(vals, fs.modelVal.Field(info.fieldIdx).Interface())
 	}
 
 	return fs.meta.insertSQL, vals, nil
@@ -278,14 +300,16 @@ func (fs *fieldScanner) buildInsertSQL() (string, []any, error) {
 // buildUpdateSQL 构建 UPDATE SQL (不含 WHERE)
 // 返回：UPDATE table SET col1 = ?, col2 = ?, ...
 // SQL 模板已在 fieldMeta 中预构建，此处仅反射填充 vals
+// vals 来自 valsPool,调用方应在 ExecContext 后 defer valsPool.Put(&vals)
 func (fs *fieldScanner) buildUpdateSQL() (string, []any, error) {
 	if fs.meta == nil || fs.meta.updateAllSQL == "" {
 		return "", nil, fmt.Errorf("no columns to update for table %s", fs.table)
 	}
 
-	vals := make([]any, len(fs.meta.fieldInfos))
-	for i, info := range fs.meta.fieldInfos {
-		vals[i] = fs.modelVal.Field(info.fieldIdx).Interface()
+	vp := valsPool.Get().(*[]any)
+	vals := (*vp)[:0]
+	for _, info := range fs.meta.fieldInfos {
+		vals = append(vals, fs.modelVal.Field(info.fieldIdx).Interface())
 	}
 
 	return fs.meta.updateAllSQL, vals, nil
@@ -293,6 +317,7 @@ func (fs *fieldScanner) buildUpdateSQL() (string, []any, error) {
 
 // buildUpdateByIDSQL 构建带 WHERE pk = ? 的 UPDATE SQL
 // SQL 模板已在 fieldMeta 中预构建（排除主键列），此处仅反射填充 vals 并追加 id
+// vals 来自 valsPool,调用方应在 ExecContext 后 defer valsPool.Put(&vals)
 func (fs *fieldScanner) buildUpdateByIDSQL(id any) (string, []any, error) {
 	if fs.meta == nil || fs.meta.pkColumn == "" {
 		return "", nil, fmt.Errorf("no primary key (db:\"id\") field found in model %s", fs.table)
@@ -301,14 +326,8 @@ func (fs *fieldScanner) buildUpdateByIDSQL(id any) (string, []any, error) {
 		return "", nil, fmt.Errorf("no columns to update for table %s (only pk field)", fs.table)
 	}
 
-	// 计算非主键字段数
-	nonPKCount := 0
-	for _, info := range fs.meta.fieldInfos {
-		if info.tag != fs.meta.pkColumn {
-			nonPKCount++
-		}
-	}
-	vals := make([]any, 0, nonPKCount+1)
+	vp := valsPool.Get().(*[]any)
+	vals := (*vp)[:0]
 	for _, info := range fs.meta.fieldInfos {
 		if info.tag == fs.meta.pkColumn {
 			continue
@@ -321,6 +340,8 @@ func (fs *fieldScanner) buildUpdateByIDSQL(id any) (string, []any, error) {
 	} else if fs.meta.idIndex >= 0 {
 		vals = append(vals, fs.modelVal.Field(fs.meta.idIndex).Interface())
 	} else {
+		// 出错:归还池
+		valsPool.Put(vp)
 		return "", nil, fmt.Errorf("no id provided and no id field found in model %s", fs.table)
 	}
 
@@ -354,7 +375,12 @@ func (fs *fieldScanner) buildDeleteSQL(where string, args ...any) (string, []any
 
 // buildSelectByIDSQL 构建按主键查询的 SELECT SQL
 // SQL 模板已在 fieldMeta 中预构建（缺少主键时回退到 "id"）
+// 当 fs.table 为空时返回空串,触发调用方 GetByID 返回 ErrInvalidModel,
+// 避免输出 "SELECT * FROM " 这类无效 SQL 死代码路径
 func (fs *fieldScanner) buildSelectByIDSQL() string {
+	if fs.table == "" {
+		return ""
+	}
 	if fs.meta == nil || fs.meta.selectByIDSQL == "" {
 		// 极端情况：meta 还未初始化（理论上不会发生，保留兜底）
 		pk := "id"

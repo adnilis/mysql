@@ -18,4 +18,10 @@ type MySQLStats struct {
 	WaitDuration      time.Duration // 等待连接的总时长
 	MaxIdleClosed     int64         // 因空闲超时关闭的连接数
 	MaxLifetimeClosed int64         // 因连接超期关闭的连接数
+	// R06 内存级查询指标(由 plugin 内部 atomic 计数;通过 Stats() 周期采样导出)
+	QueryTotal   int64 // 总查询次数
+	QueryErrors  int64 // 查询错误次数
+	QuerySlow    int64 // 慢查询次数
+	RowsRead     int64 // 总读取行数
+	RowsAffected int64 // 总影响行数
 }

@@ -212,3 +212,99 @@ func BenchmarkFormatTableNames(b *testing.B) {
 		_ = formatTableNames(query)
 	}
 }
+
+// BenchmarkBuildQueryPooled 验证 scratch 缓冲复用对 buildQuery 分配的影响
+// 链式 5 个 Where + Join + Limit,模拟真实 DAO 查询
+func BenchmarkBuildQueryPooled(b *testing.B) {
+	plugin, _ := newBenchPlugin(b)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		qr := plugin.Query(ctx, "SELECT * FROM users")
+		qr.LeftJoin("orders", "users.id = orders.user_id", 1)
+		qr.Where("age > ?", 18)
+		qr.Where("status = ?", "active")
+		qr.Where("country = ?", "CN")
+		qr.Where("level >= ?", 10)
+		qr.Where("vip = ?", true)
+		qr.Limit(50)
+		_, _ = qr.buildQuery()
+	}
+}
+
+// BenchmarkBuildQueryPooled_AcquireRelease 验证对象池复用对 acquire/release 的影响
+// (MySQLQueryResult 通过 sync.Pool 复用,避免每次 new + 字段零值)
+func BenchmarkBuildQueryPooled_AcquireRelease(b *testing.B) {
+	plugin, _ := newBenchPlugin(b)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		qr := plugin.Query(ctx, "SELECT * FROM users")
+		qr.Where("id = ?", 1)
+		_, _ = qr.buildQuery()
+		// 终端方法未调用,手动 release 模拟链式场景
+		releaseMySQLQueryResult(qr)
+	}
+}
+
+// BenchmarkBatchExec 验证 BatchExec 单 chunk 路径的开销
+func BenchmarkBatchExec(b *testing.B) {
+	plugin, mock := newBenchPlugin(b)
+	rows := make([][]any, 100)
+	for i := range rows {
+		rows[i] = []any{int64(i), "name"}
+	}
+	// sqlmock 期望每个 B.N 一次执行
+	mock.ExpectExec(`INSERT INTO t \(x, y\) VALUES \(\?,\?\)`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = plugin.BatchExec(context.Background(), "t", []string{"x", "y"}, rows, 100)
+	}
+}
+
+// BenchmarkFormatQuery_R05 验证 R05 优化(formatTableNames 去 ToUpper + strings.Builder)的开销
+func BenchmarkFormatQuery_R05(b *testing.B) {
+	ql := NewQueryLogger(&mysqlLoggerConfig{enabled: true, slowThreshold: 100})
+	query := "SELECT id, name FROM users INNER JOIN orders ON users.id = orders.user_id WHERE age > ? AND status = ?"
+	args := []any{18, "active"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ql.formatQuery(query, args...)
+	}
+}
+
+// BenchmarkFormatQuery_NoArgs_R05 无 args 路径(formatTableNames 单调用)
+func BenchmarkFormatQuery_NoArgs_R05(b *testing.B) {
+	ql := NewQueryLogger(&mysqlLoggerConfig{enabled: true, slowThreshold: 100})
+	query := "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ql.formatQuery(query)
+	}
+}
+
+// BenchmarkValsPool 验证 R05 valsPool 复用对写路径的分配影响
+func BenchmarkValsPool(b *testing.B) {
+	m := &benchModel{ID: 1, Name: "alice", Age: 25}
+	scanner := newFieldScanner(m)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, vals, _ := scanner.buildInsertSQL()
+		valsPool.Put(&vals)
+	}
+}
+
+type benchModel struct {
+	ID   int64  `db:"id"`
+	Name string `db:"name"`
+	Age  int    `db:"age"`
+}
+
+func (m *benchModel) TableName() string { return "bench" }

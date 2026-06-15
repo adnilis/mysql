@@ -1,9 +1,0 @@
-﻿batch_test.go
-bench_test.go
-config.go
-logger.go
-mysql_test.go
-plugin.go
-pool_test.go
-query_test.go
-scanner.go

@@ -199,7 +199,7 @@ func TestDSNBuildIncludesTimeouts(t *testing.T) {
 
 	dsn := buildDSN(cfg)
 
-	// mysql.Config.FormatDSN 会以 readTimeout=(11s) 形式输出
+	// mysql.Config.FormatDSN 会以 timeout=(7s) 形式输出
 	if !strings.Contains(dsn, "timeout=7s") {
 		t.Errorf("DSN missing ConnTimeout(7s): %s", dsn)
 	}

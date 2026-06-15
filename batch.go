@@ -48,6 +48,105 @@ func (p *MySQLPlugin) BatchInsert(ctx context.Context, models []IModel, batchSiz
 	return allIDs, nil
 }
 
+// BatchExec 通用多行 INSERT 助手(接受 [][]any 而非 []IModel)
+//
+// 适用场景:mail DAO 等无 IModel 的多行写入,或动态列名/动态行数据的批量插入。
+// 替代调用方手写 "INSERT ... VALUES (?,?,?),(?,?,?)" 样板。
+//
+// 参数:
+//   - table   : 表名(已通过 isValidIdentifier 校验)
+//   - columns : 列名切片
+//   - rows    : 每行的参数切片,每行长度必须 == len(columns)
+//   - chunkSize: 每条 INSERT 语句的最大行数(0 → 默认 200)
+//
+// 返回:总受影响行数(累加各 chunk 的 RowsAffected)
+//
+// 限制:
+//   - 单条 INSERT 体积受 MySQL max_allowed_packet 约束(默认 16MB),
+//     chunkSize=200 × 10 列 × 平均 50 字节 ≈ 100KB,远低于上限
+//   - 不在事务内,失败可能部分写入(若需原子性,调用方应包在 RunInTransaction 中)
+func (p *MySQLPlugin) BatchExec(ctx context.Context, table string, columns []string, rows [][]any, chunkSize int) (int64, error) {
+	if !isValidIdentifier(table) {
+		return 0, wrapMySQLError(table, "batch exec", ErrInvalidModel)
+	}
+	if len(columns) == 0 {
+		return 0, wrapMySQLError(table, "batch exec", fmt.Errorf("columns must not be empty"))
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = 200
+	}
+
+	db, err := p.getDB()
+	if err != nil {
+		return 0, err
+	}
+
+	// 预拼单行占位符:(?,?,?,...)
+	rowPlaceholder := "(" + strings.TrimRight(strings.Repeat("?,", len(columns)), ",") + ")"
+
+	var totalAffected int64
+	for start := 0; start < len(rows); start += chunkSize {
+		end := start + chunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+
+		// 校验每行列数
+		for i, row := range chunk {
+			if len(row) != len(columns) {
+				return totalAffected, wrapMySQLError(table, "batch exec",
+					fmt.Errorf("row %d: expected %d columns, got %d", i, len(columns), len(row)))
+			}
+		}
+
+		// 构建 INSERT INTO t (c1,c2) VALUES (?,?),(?,?),(?,?)
+		var sb strings.Builder
+		sb.Grow(32 + len(table) + len(columns)*8 + len(chunk)*(len(rowPlaceholder)+2))
+		sb.WriteString("INSERT INTO ")
+		sb.WriteString(table)
+		sb.WriteString(" (")
+		for i, col := range columns {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(col)
+		}
+		sb.WriteString(") VALUES ")
+		for i := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(rowPlaceholder)
+		}
+		query := sb.String()
+
+		// 展开所有参数到一维切片
+		args := make([]any, 0, len(chunk)*len(columns))
+		for _, row := range chunk {
+			args = append(args, row...)
+		}
+
+		// 执行
+		t := time.Now()
+		result, err := db.ExecContext(ctx, query, args...)
+		duration := time.Since(t)
+
+		if err != nil {
+			p.queryLogger.LogError(ctx, query, duration, err, args...)
+			return totalAffected, wrapMySQLError(table, "batch exec", err)
+		}
+		affected, _ := result.RowsAffected()
+		totalAffected += affected
+		p.logQ(ctx, "BATCH_EXEC", query, duration, affected, args...)
+	}
+
+	return totalAffected, nil
+}
+
 // batchInsertSingle 单批次批量插入（内部方法）
 func (p *MySQLPlugin) batchInsertSingle(ctx context.Context, db *sqlx.DB, batch []IModel) ([]int64, error) {
 	if len(batch) == 0 {

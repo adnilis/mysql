@@ -132,3 +132,50 @@ func (t *MySQLTransaction) Exec(ctx context.Context, query string, args ...inter
 	t.plugin.logQ(ctx, "EXEC", query, duration, rowsAffected, args...)
 	return result, nil
 }
+
+// RunInTransaction 在事务中执行 fn,自动处理 Begin/Commit/Rollback/Close
+//
+// 行为契约:
+//   - Begin 失败:返回 begin 错误,fn 不被调用
+//   - fn 返回 nil:自动 Commit
+//   - fn 返回 error:自动 Rollback,把 fn 的 error 透传出去
+//   - fn panic:自动 Rollback 后重新 panic(原 panic 值不变)
+//
+// Rollback 使用 context.Background() 而非入参 ctx,
+// 避免因 ctx 已取消导致回滚失败(数据库回滚不应受业务 ctx 约束)
+//
+// 用法(替代 6+ 处 SaveHeroes/SaveBuilds/... loop-Exec 样板):
+//
+//	err := plugin.RunInTransaction(ctx, func(tx *MySQLTransaction) error {
+//	    if _, err := tx.Exec(ctx, "DELETE FROM heros WHERE rid = ?", uid); err != nil {
+//	        return err
+//	    }
+//	    for _, h := range heros {
+//	        if _, err := tx.Exec(ctx, "INSERT INTO heros ...", ...); err != nil {
+//	            return err
+//	        }
+//	    }
+//	    return nil
+//	})
+func (p *MySQLPlugin) RunInTransaction(ctx context.Context, fn func(tx *MySQLTransaction) error) (err error) {
+	tx, beginErr := p.Begin()
+	if beginErr != nil {
+		return beginErr
+	}
+
+	defer func() {
+		// panic 路径:先回滚,再 re-panic
+		if r := recover(); r != nil {
+			_ = tx.Rollback(context.Background())
+			panic(r)
+		}
+		// 正常路径:fn 返回 err → Rollback;fn 返回 nil → Commit
+		if err != nil {
+			_ = tx.Rollback(context.Background())
+			return
+		}
+		err = tx.Commit(context.Background())
+	}()
+
+	return fn(tx)
+}

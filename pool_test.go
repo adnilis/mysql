@@ -205,28 +205,10 @@ func TestBuildQueryCaching(t *testing.T) {
 	}
 }
 
-// TestEffectiveMaxIdleConns covers R01 风险 #4 修复 — MinIdleConns 影响实际 MaxIdleConns
-func TestEffectiveMaxIdleConns(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  MySQLPluginConfig
-		want int
-	}{
-		{"min < max keeps max", MySQLPluginConfig{MinIdleConns: 3, MaxIdleConns: 5}, 5},
-		{"min == max keeps value", MySQLPluginConfig{MinIdleConns: 5, MaxIdleConns: 5}, 5},
-		{"min > max bumps up", MySQLPluginConfig{MinIdleConns: 8, MaxIdleConns: 5}, 8},
-		{"both zero stays zero", MySQLPluginConfig{MinIdleConns: 0, MaxIdleConns: 0}, 0},
-		{"only min set, max zero", MySQLPluginConfig{MinIdleConns: 4, MaxIdleConns: 0}, 4},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := effectiveMaxIdleConns(&tt.cfg)
-			if got != tt.want {
-				t.Errorf("effectiveMaxIdleConns() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
+// TestEffectiveMaxIdleConns 已随 R04 移除:Go database/sql 没有
+// SetMinIdleConns 原生方法(标准库在 1.26.0 仍未提供),有效 SetMaxIdleConns
+// 计算保留在 pool.go::effectiveMaxIdleConns 中,Start() 路径会单独覆盖。
+// 原表驱动测试覆盖已并入 config_test.go 的 normalize 验证。
 
 // TestStart_ReentranceClosesOld verifies R01 风险 #3 修复 — 重复 Start 不会泄漏旧 db
 //

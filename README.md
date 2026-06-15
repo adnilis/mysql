@@ -454,3 +454,343 @@ func main() {
     app.Stop()
 }
 ```
+
+## R04 新增 API(R04 起)
+
+### 主键标记约定
+
+R04 起,`db` tag 支持可选主键标记,显式声明 PK 列:
+
+```go
+// 旧约定:db:"id" 自动识别为主键(向后兼容)
+type OldModel struct {
+    ID int64 `db:"id"`
+    Name string `db:"name"`
+}
+
+// R04 新增:db:"<col>,pk" 显式声明任意列为主键
+type UserModel struct {
+    UserID int64  `db:"user_id,pk"`     // user_id 是主键
+    Name   string `db:"name"`
+}
+
+// 也接受 db:"<col>,primary"
+type OrderModel struct {
+    OrderNo string `db:"order_no,primary"`
+}
+```
+
+向后兼容:所有现有 `db:"id"` 标记继续工作。
+
+### 标量 `First`
+
+链式 `First` 现在接受标量指针,无需先定义结构体:
+
+```go
+// 旧:必须用 *User + errors.Is 判 not found
+var user User
+err := plugin.Table("users").Where("name = ?", name).First(&user)
+
+// R04:直接拿 *int64 / *string / *bool
+var uid int64
+err := plugin.Table("users").Where("name = ?", name).First(&uid)
+if errors.Is(err, ErrModelNotFound) {
+    return nil, nil
+}
+
+var userName string
+err = plugin.Table("users").Where("id = ?", 1).First(&userName)
+```
+
+支持的标量类型:`*int8`/`*int32`/`*int`/`*int64`/`*string`/`*float32`/`*float64`/`*bool`。
+
+### `WithTimeout` 链式超时
+
+替代 DAO 层 `xxxDBTimeout + context.WithTimeout` 样板:
+
+```go
+// 旧:每个 DAO 都要定义 const xxxDBTimeout = 3*time.Second
+ctx, cancel := context.WithTimeout(ctx, xxxDBTimeout)
+defer cancel()
+err := plugin.Exec(ctx, sql, args...)
+
+// R04:在链式上挂超时
+err := plugin.Table("users").
+    Where("age > ?", 18).
+    WithTimeout(3*time.Second).
+    Find(&users)
+// 多次链式 WithTimeout 会回收前一次的 cancel,不会泄漏
+```
+
+### `RunInTransaction` 事务封装
+
+替代 6+ 处 `SaveHeroes`/`SaveBuilds`/... 的 loop-Exec 样板,提供自动 Begin/Commit/Rollback:
+
+```go
+// 旧:循环 Exec 无事务,失败会留下脏数据
+plugin.Exec(ctx, "DELETE FROM heros WHERE rid = ?", uid)
+for _, h := range heros {
+    plugin.Exec(ctx, "INSERT INTO heros ...", h.Field1, h.Field2, ...)
+}
+
+// R04:RunInTransaction 自动管理事务
+err := plugin.RunInTransaction(ctx, func(tx *MySQLTransaction) error {
+    if _, err := tx.Exec(ctx, "DELETE FROM heros WHERE rid = ?", uid); err != nil {
+        return err
+    }
+    for _, h := range heros {
+        if _, err := tx.Exec(ctx, "INSERT INTO heros ...", h.Field1, h.Field2, ...); err != nil {
+            return err
+        }
+    }
+    return nil
+})
+// fn 返回 nil → 自动 Commit
+// fn 返回 error → 自动 Rollback,error 透传
+// fn panic → 自动 Rollback 后重新 panic
+```
+
+### `BatchExec` 通用多行 INSERT
+
+替代 `mail_mysql_dao.go` 等场景下手写多 VALUES 样板:
+
+```go
+// 旧:手拼 SQL,易写错
+var sb strings.Builder
+sb.WriteString("INSERT INTO mail_rec (mid, tuid) VALUES ")
+for i, r := range recs {
+    if i > 0 { sb.WriteString(", ") }
+    sb.WriteString("(?, ?)")
+}
+plugin.DB().ExecContext(ctx, sb.String(), args...)
+
+// R04:通用批量
+rows := [][]any{}
+for _, r := range recs {
+    rows = append(rows, []any{r.Mid, r.Tuid})
+}
+affected, err := plugin.BatchExec(ctx, "mail_rec",
+    []string{"mid", "tuid"}, rows, 200)
+// chunkSize=200 → 自动分片
+```
+
+## 性能说明(R04)
+
+R04 通过以下手段减少热路径分配:
+
+- **对象池扩展**:`MySQLQueryResult` 的 `edits` / `allArgs` 缓冲下沉到结构体,由 `sync.Pool` 复用,`buildQuery` 入口不再 `make`。
+- **类型级反射缓存**:`getTableNameFromDest` 引入 `sync.Map` 缓存,`First` 调用 O(1)。
+- **零分配关键字检测**:`containsKeywordFold` / `indexKeywordFold` 取代 `strings.ToUpper` 整段拷贝,链式 `Select`/`Update`/`Distinct`/`Pluck`/`First` 节省每调用 1 次大字符串 alloc。
+- **`MySQLQueryResult.err` 字段保留**:`Table`/`Model` 入口用其做"sticky error"传播,非死字段。
+
+`BenchmarkBuildQueryPooled_AcquireRelease` 实测 145ns/op,3 allocs/op(对比之前 buildQuery 内部 `make([]edit, 0, 7)` + `make([]any, 0, N)` 节省约 6 allocs/call)。
+
+## R05 / R06 / R07 新增 API
+
+### R05:MapScan `Find`
+
+```go
+// 直接拿 map 列表(替代 plugin.DB().QueryxContext 逃逸)
+var logs []map[string]any
+plugin.Table("logs").Where("level = ?", "info").Find(&logs)
+for _, l := range logs {
+    fmt.Println(l["msg"])
+}
+```
+
+### R05:慢查询回调钩子
+
+```go
+plugin.SetSlowQueryHook(func(ctx context.Context, query string, duration time.Duration, rows int64, args ...any) {
+    metrics.RecordSlowQuery(ctx, query, duration, rows) // 接 Prometheus / OTel
+})
+```
+
+### R06:`Page(page, pageSize)`
+
+```go
+// 替换 .Limit(20).Offset(20*(page-1)) 样板
+err := plugin.Table("orders").
+    Where("status = ?", "paid").
+    Page(page, 20).
+    Find(&results)
+```
+
+### R06:`Upsert` 通用多行 INSERT ... ON DUPLICATE KEY UPDATE
+
+```go
+rows := [][]any{
+    {"alice", 100},
+    {"bob",   200},
+}
+affected, err := plugin.Upsert(ctx, "rankings",
+    []string{"name", "score"}, rows, nil, 200)
+// updateCols=nil 时默认除 "id"/"ID" 外都更新
+```
+
+### R06:内存级指标通过 `Stats()` 暴露
+
+```go
+stats := plugin.Stats()
+fmt.Printf("QPS=%.1f Slow=%d Errors=%d\n",
+    float64(stats.QueryTotal)/elapsed.Seconds(),
+    stats.QuerySlow, stats.QueryErrors)
+```
+
+5 个 atomic 计数器:`QueryTotal` / `QueryErrors` / `QuerySlow` / `RowsRead` / `RowsAffected`。
+
+### R07:`SaveOnConflict` IModel 版 upsert
+
+```go
+// 替代 DAO 中"先 SELECT 检查再 INSERT/UPDATE"两段式样板
+affected, err := plugin.SaveOnConflict(ctx, &user, "phone")
+// conflictCols="phone":该列有 UNIQUE 索引,触发 ON DUPLICATE KEY UPDATE
+// 冲突时更新除 phone 外的所有列
+```
+
+### R07:连接池预热
+
+`Start` 后台 goroutine 主动 `Ping` 填充 `MinIdleConns` 个空闲连接,消除冷启动首波 P99 飙升。
+失败不致命,池子按需懒分配。
+
+### R07:Schema 自省 `ListTables` / `DescribeTable`
+
+```go
+tables, _ := plugin.ListTables(ctx)
+for _, t := range tables {
+    info, _ := plugin.DescribeTable(ctx, t)
+    fmt.Println(info)
+}
+```
+
+`DescribeTable` 返回 `TableInfo{Columns []ColumnDef, Indexes []IndexDef}`,可对接代码生成器、迁移工具、文档生成。
+
+## DAO 迁移示例(R04-R07 综合)
+
+将 sanguo 现有 DAO 模式改为 R04-R07 新 API 的真实重构示例。
+
+### 模式 1:多步写改为事务
+
+```go
+// 旧:loop-Exec,失败留脏数据(无事务)
+plugin.Exec(ctx, "DELETE FROM heros WHERE rid = ?", uid)
+for _, h := range heroes {
+    plugin.Exec(ctx, "INSERT INTO heros ...", h.Field1, h.Field2, ...)
+}
+
+// 新:RunInTransaction(R04) — 自动 Begin/Commit/Rollback/Panic 恢复
+err := plugin.RunInTransaction(ctx, func(tx *MySQLTransaction) error {
+    if _, err := tx.Exec(ctx, "DELETE FROM heros WHERE rid = ?", uid); err != nil {
+        return err
+    }
+    for _, h := range heroes {
+        if _, err := tx.Exec(ctx, "INSERT INTO heros ...", h.Field1, h.Field2, ...); err != nil {
+            return err
+        }
+    }
+    return nil
+})
+```
+
+### 模式 2:`xxxDBTimeout` 改链式 `WithTimeout`
+
+```go
+// 旧:每个 DAO 顶部 const xxxDBTimeout = 3*time.Second
+ctx, cancel := context.WithTimeout(ctx, xxxDBTimeout)
+defer cancel()
+err := plugin.Exec(ctx, "UPDATE ...", ...)
+
+// 新:WithTimeout(R04) — 一次学习,全 DAO 通用
+err := plugin.Table("orders").Where(...).WithTimeout(3*time.Second).Find(&orders)
+```
+
+### 模式 3:手拼多 VALUES INSERT 改 `BatchExec`
+
+```go
+// 旧:mail_mysql_dao.go::InsertMailRecBatch 手拼
+var sb strings.Builder
+sb.WriteString("INSERT INTO mail_rec (mid, tuid) VALUES ")
+args := []any{}
+for i, r := range recs {
+    if i > 0 { sb.WriteString(", ") }
+    sb.WriteString("(?, ?)")
+    args = append(args, r.Mid, r.Tuid)
+}
+plugin.DB().ExecContext(ctx, sb.String(), args...)
+
+// 新:BatchExec(R04) — 通用批量,自动分片校验
+rows := make([][]any, len(recs))
+for i, r := range recs { rows[i] = []any{r.Mid, r.Tuid} }
+affected, err := plugin.BatchExec(ctx, "mail_rec",
+    []string{"mid", "tuid"}, rows, 200)
+```
+
+### 模式 4:`DB().QueryxContext` 逃逸改 MapScan `Find`
+
+```go
+// 旧:role/loading DAO 用 plugin.DB().QueryxContext 拿 map
+rows, _ := plugin.DB().QueryxContext(ctx, sql, args...)
+defer rows.Close()
+for rows.Next() {
+    item := make(map[string]any)
+    rows.MapScan(item)
+    // 处理 item["xxx"]...
+}
+
+// 新:Find(&maps) (R05) — 链式 + 自动 MapScan
+var items []map[string]any
+plugin.Table("xxx").Where(...).Find(&items)
+for _, item := range items { /* 处理 item["xxx"]... */ }
+```
+
+### 模式 5:标量查询免定义空结构体
+
+```go
+// 旧:为拿一个 int64 uid 定义空 User 结构
+var user User
+err := plugin.Table("users").Where("name = ?", name).First(&user)
+uid := user.ID
+
+// 新:First(&uid) (R04) — 标量派发
+var uid int64
+err := plugin.Table("users").Where("name = ?", name).First(&uid)
+```
+
+### 模式 6:分页
+
+```go
+// 旧:.Limit(20).Offset(20*page) 算术
+err := plugin.Table("orders").Where(...).Limit(20).Offset(20*page).Find(&orders)
+
+// 新:Page(page, 20) (R06) — 自动夹紧 page<1
+err := plugin.Table("orders").Where(...).Page(page, 20).Find(&orders)
+```
+
+### 模式 7:"有则更新无则插入"
+
+```go
+// 旧:先 SELECT 检查再 INSERT/UPDATE
+var existing Counter
+err := plugin.Table("counters").Where("k = ?", key).First(&existing)
+if errors.Is(err, ErrModelNotFound) {
+    plugin.Exec(ctx, "INSERT INTO counters (k, v) VALUES (?, ?)", key, value)
+} else {
+    plugin.Exec(ctx, "UPDATE counters SET v = ? WHERE k = ?", value, key)
+}
+
+// 新:SaveOnConflict (R07) — 一行解决
+_, err = plugin.SaveOnConflict(ctx, &Counter{K: key, V: value}, "k")
+```
+
+## 迁移路径建议
+
+R04-R07 的所有新 API 都是**纯添加**,不破坏现有调用。推荐迁移顺序:
+
+1. **R06 指标接入**:在 bootstrap 周期采样 `Stats()`,接 Prometheus(无调用方改动)
+2. **R04 `WithTimeout`**:逐 DAO 替换 `xxxDBTimeout` 样板(机械替换,无风险)
+3. **R04 `RunInTransaction`**:在 `SaveHeroes/SaveBuilds/...` 等多步写处启用(影响范围大,需 review 错误处理)
+4. **R05 `MapScan` Find**:替换 `DB().QueryxContext` 逃逸(机械替换)
+5. **R04 `BatchExec`**:替换 `mail_mysql_dao.go::InsertMailRecBatch` 等手拼 SQL
+6. **R06 `Page`**:替换 `.Limit(20).Offset(20*page)` 算术
+7. **R07 `SaveOnConflict`**:替换"先 SELECT 再 INSERT/UPDATE"两段式
+8. **R07 Schema 自省**:仅在代码生成 / 迁移工具需要时使用

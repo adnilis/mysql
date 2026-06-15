@@ -22,6 +22,13 @@ type MySQLPlugin struct {
 	stopOnce    sync.Once               // 确保停止操作只执行一次
 	state       mysqlPluginState        // 插件状态
 	queryLogger *QueryLogger            // 查询日志记录器
+
+	// R06 内存级查询指标(atomic,无锁读取,适合高频计数)
+	metricQueryTotal   atomic.Int64 // 总查询次数(LogQuery 调用)
+	metricQueryErrors  atomic.Int64 // 查询错误次数(LogError 调用)
+	metricQuerySlow    atomic.Int64 // 慢查询次数(超过 SlowThreshold)
+	metricRowsRead     atomic.Int64 // 总读取行数(Find/Select/First)
+	metricRowsAffected atomic.Int64 // 总影响行数(Insert/Update/Delete/Exec)
 }
 
 // mysqlPluginState 插件状态枚举
@@ -113,6 +120,12 @@ func (p *MySQLPlugin) Stats() MySQLStats {
 		PoolSize:     p.config.PoolSize,
 		MinIdleConns: p.config.MinIdleConns,
 		MaxIdleConns: p.config.MaxIdleConns,
+		// R06 内存指标
+		QueryTotal:   p.metricQueryTotal.Load(),
+		QueryErrors:  p.metricQueryErrors.Load(),
+		QuerySlow:    p.metricQuerySlow.Load(),
+		RowsRead:     p.metricRowsRead.Load(),
+		RowsAffected: p.metricRowsAffected.Load(),
 	}
 
 	// 获取数据库连接池统计信息（无锁）

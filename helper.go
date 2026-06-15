@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // SQL 标识符验证正则
@@ -30,12 +31,18 @@ func sanitizeIdentifier(name string) string {
 	return name
 }
 
+// tableNameCache 缓存 reflect.Type → 表名,避免每次 First 调用反射创建实例
+// 写多读少场景用 sync.Map,纯读路径无锁
+var tableNameCache sync.Map
+
 // getTableNameFromDest 从目标类型推断表名
 // 支持的类型：
 //   - &[]User{} -> "users"
 //   - &User{} -> "users"
 //   - 实现了 IModel 接口的类型使用 TableName() 方法
 //   - dest 为 nil 或非结构体时返回 ""
+//
+// 性能:首次反射后结果按 reflect.Type 缓存,后续调用 O(1) map 读取
 func getTableNameFromDest(dest any) string {
 	if dest == nil {
 		return ""
@@ -44,6 +51,7 @@ func getTableNameFromDest(dest any) string {
 	if t == nil {
 		return ""
 	}
+	// 缓存键:取到 struct type 即可,ptr/slice 解引用后命中同一 entry
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
@@ -53,6 +61,16 @@ func getTableNameFromDest(dest any) string {
 	if t.Kind() != reflect.Struct {
 		return ""
 	}
+	if v, ok := tableNameCache.Load(t); ok {
+		return v.(string)
+	}
+	name := computeTableName(t)
+	actual, _ := tableNameCache.LoadOrStore(t, name)
+	return actual.(string)
+}
+
+// computeTableName 实际执行反射,只在类型首次出现时调用一次
+func computeTableName(t reflect.Type) string {
 	if model, ok := reflect.New(t).Interface().(IModel); ok {
 		return model.TableName()
 	}

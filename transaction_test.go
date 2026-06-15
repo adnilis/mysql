@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -253,4 +254,75 @@ func TestTransactionClose_Idempotent(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("rollback called more than expected: %v", err)
 	}
+}
+
+// TestRunInTransaction_HappyPath 验证 fn 返回 nil → 自动 Commit
+func TestRunInTransaction_HappyPath(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").
+		WithArgs(1, "alice").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := plugin.RunInTransaction(context.Background(), func(tx *MySQLTransaction) error {
+		_, err := tx.Exec(context.Background(), "INSERT INTO users VALUES (?, ?)", 1, "alice")
+		return err
+	})
+
+	if err != nil {
+		t.Fatalf("RunInTransaction failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestRunInTransaction_FnError 验证 fn 返回 error → 自动 Rollback 且 error 透传
+func TestRunInTransaction_FnError(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectRollback()
+
+	fnErr := errors.New("simulated fn error")
+	err := plugin.RunInTransaction(context.Background(), func(tx *MySQLTransaction) error {
+		_, _ = tx.Exec(context.Background(), "INSERT INTO users VALUES (?, ?)", 1, "alice")
+		return fnErr
+	})
+
+	if !errors.Is(err, fnErr) {
+		t.Errorf("expected fn error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestRunInTransaction_Panic 验证 fn panic → 自动 Rollback 后重新 panic
+func TestRunInTransaction_Panic(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic to be re-raised")
+		}
+		if r != "boom" {
+			t.Errorf("expected panic value 'boom', got %v", r)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unfulfilled expectations: %v", err)
+		}
+	}()
+
+	_ = plugin.RunInTransaction(context.Background(), func(tx *MySQLTransaction) error {
+		panic("boom")
+	})
 }

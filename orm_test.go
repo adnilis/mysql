@@ -463,3 +463,211 @@ type badTableModel struct {
 }
 
 func (m *badTableModel) TableName() string { return "users; DROP TABLE users;--" }
+
+// TestUpsert_SingleChunk 验证单 chunk upsert 生成正确 ON DUPLICATE KEY UPDATE
+// 默认 updateCols=nil 时:除 "id"/"ID" 外的所有列都更新(本例 k/v 两列都在 update 列表)
+func TestUpsert_SingleChunk(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`INSERT INTO config \(k, v\) VALUES \(\?,\?\), \(\?,\?\) ON DUPLICATE KEY UPDATE k = VALUES\(k\), v = VALUES\(v\)`).
+		WithArgs("a", 1, "b", 2).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	rows := [][]any{
+		{"a", 1},
+		{"b", 2},
+	}
+	affected, err := plugin.Upsert(context.Background(), "config",
+		[]string{"k", "v"}, rows, nil, 10)
+	if err != nil {
+		t.Fatalf("Upsert failed: %v", err)
+	}
+	if affected != 2 {
+		t.Errorf("expected 2 affected, got %d", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestUpsert_DefaultSkipsID 验证 updateCols=nil 默认跳过 "id" / "ID" 列
+func TestUpsert_DefaultSkipsID(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`INSERT INTO users \(id, name\) VALUES \(\?,\?\) ON DUPLICATE KEY UPDATE name = VALUES\(name\)`).
+		WithArgs(1, "alice").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rows := [][]any{{1, "alice"}}
+	_, err := plugin.Upsert(context.Background(), "users",
+		[]string{"id", "name"}, rows, nil, 10)
+	if err != nil {
+		t.Fatalf("Upsert failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestUpsert_ExplicitUpdateCols 验证显式指定 updateCols
+func TestUpsert_ExplicitUpdateCols(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`INSERT INTO t \(id, name, score\) VALUES \(\?,\?,\?\) ON DUPLICATE KEY UPDATE score = VALUES\(score\), name = VALUES\(name\)`).
+		WithArgs(1, "alice", 100).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rows := [][]any{{1, "alice", 100}}
+	affected, err := plugin.Upsert(context.Background(), "t",
+		[]string{"id", "name", "score"}, rows,
+		[]string{"score", "name"}, 10)
+	if err != nil {
+		t.Fatalf("Upsert failed: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("expected 1 affected, got %d", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestUpsert_InvalidTable 拒绝非法表名
+func TestUpsert_InvalidTable(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	_, err := plugin.Upsert(context.Background(), "evil; DROP", []string{"x"},
+		[][]any{{1}}, nil, 10)
+	if !errors.Is(err, ErrInvalidModel) {
+		t.Errorf("expected ErrInvalidModel, got %v", err)
+	}
+}
+
+// TestStats_QueryMetrics 验证内存级指标递增
+func TestStats_QueryMetrics(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery(`SELECT \* FROM users`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "a").AddRow(2, "b"))
+
+	var results []testModel
+	err := plugin.Query(context.Background(), "SELECT * FROM users").Find(&results)
+	if err != nil {
+		t.Fatalf("Find failed: %v", err)
+	}
+
+	stats := plugin.Stats()
+	if stats.QueryTotal < 1 {
+		t.Errorf("QueryTotal should be >= 1, got %d", stats.QueryTotal)
+	}
+	if stats.RowsRead < 2 {
+		t.Errorf("RowsRead should be >= 2, got %d", stats.RowsRead)
+	}
+}
+
+// TestSaveOnConflict_Valid 验证 IModel 版的 ON DUPLICATE KEY UPDATE
+func TestSaveOnConflict_Valid(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`INSERT INTO test_models \(id, name\) VALUES \(\?,\?\) ON DUPLICATE KEY UPDATE name = VALUES\(name\)`).
+		WithArgs(1, "alice").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	affected, err := plugin.SaveOnConflict(context.Background(),
+		&testModel{ID: 1, Name: "alice"}, "id")
+	if err != nil {
+		t.Fatalf("SaveOnConflict failed: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("expected 1 affected, got %d", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestSaveOnConflict_AllConflictColumns 验证所有列都是 conflict 时回退 INSERT IGNORE
+func TestSaveOnConflict_AllConflictColumns(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`INSERT IGNORE INTO test_models \(id, name\) VALUES \(\?,\?\)`).
+		WithArgs(1, "alice").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	_, err := plugin.SaveOnConflict(context.Background(),
+		&testModel{ID: 1, Name: "alice"}, "id", "name")
+	if err != nil {
+		t.Fatalf("SaveOnConflict all-conflict failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestSaveOnConflict_NilModel nil 指针返回 ErrInvalidModel
+func TestSaveOnConflict_NilModel(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	_, err := plugin.SaveOnConflict(context.Background(), nil)
+	if !errors.Is(err, ErrInvalidModel) {
+		t.Errorf("expected ErrInvalidModel, got %v", err)
+	}
+}
+
+// TestDescribeTable_Valid 验证 schema 自省 SQL
+func TestDescribeTable_Valid(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery(`SELECT COLUMN_NAME.*FROM information_schema\.COLUMNS`).
+		WithArgs("test_db", "users").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE", "IS_NULLABLE",
+			"COLUMN_DEFAULT", "COLUMN_KEY", "COLUMN_COMMENT", "ORDINAL_POSITION",
+		}).AddRow("id", "bigint", "bigint(20)", "NO", nil, "PRI", "primary key", 1).
+			AddRow("name", "varchar", "varchar(64)", "YES", nil, "", "user name", 2))
+
+	mock.ExpectQuery(`SELECT INDEX_NAME.*FROM information_schema\.STATISTICS`).
+		WithArgs("test_db", "users").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"INDEX_NAME", "COLUMN_NAME", "SEQ_IN_INDEX", "NON_UNIQUE",
+		}).AddRow("PRIMARY", "id", 1, 0))
+
+	info, err := plugin.DescribeTable(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("DescribeTable failed: %v", err)
+	}
+	if info.TableName != "users" {
+		t.Errorf("TableName = %q, want users", info.TableName)
+	}
+	if len(info.Columns) != 2 {
+		t.Errorf("expected 2 columns, got %d", len(info.Columns))
+	}
+	if info.Columns[0].Name != "id" || info.Columns[0].Key != "PRI" {
+		t.Errorf("id column wrong: %+v", info.Columns[0])
+	}
+	if info.Columns[1].Nullable != true {
+		t.Errorf("name should be nullable")
+	}
+	if len(info.Indexes) != 1 || info.Indexes[0].Name != "PRIMARY" {
+		t.Errorf("PRIMARY index missing: %+v", info.Indexes)
+	}
+}
+
+// TestListTables_Valid 验证 list tables
+func TestListTables_Valid(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectQuery(`SELECT TABLE_NAME FROM information_schema\.TABLES`).
+		WithArgs("test_db").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
+			AddRow("orders").
+			AddRow("users"))
+
+	tables, err := plugin.ListTables(context.Background())
+	if err != nil {
+		t.Fatalf("ListTables failed: %v", err)
+	}
+	if len(tables) != 2 || tables[0] != "orders" || tables[1] != "users" {
+		t.Errorf("unexpected tables: %v", tables)
+	}
+}

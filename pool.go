@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/adnilis/logger"
 	"github.com/jmoiron/sqlx"
@@ -23,12 +24,14 @@ func (c *mysqlLoggerConfig) SlowThreshold() int64 { return c.slowThreshold }
 var mysqlQueryResultPool = sync.Pool{
 	New: func() interface{} {
 		return &MySQLQueryResult{
-			joins:   make([]joinClause, 0, 4),   // 预分配 4 个 JOIN
-			wheres:  make([]whereClause, 0, 8),  // 预分配 8 个 WHERE
-			groups:  make([]string, 0, 2),       // 预分配 2 个 GROUP
-			havings: make([]havingClause, 0, 2), // 预分配 2 个 HAVING
-			orders:  make([]string, 0, 4),       // 预分配 4 个 ORDER
-			args:    make([]interface{}, 0, 16), // 预分配 16 个参数
+			joins:        make([]joinClause, 0, 4),   // 预分配 4 个 JOIN
+			wheres:       make([]whereClause, 0, 8),  // 预分配 8 个 WHERE
+			groups:       make([]string, 0, 2),       // 预分配 2 个 GROUP
+			havings:      make([]havingClause, 0, 2), // 预分配 2 个 HAVING
+			orders:       make([]string, 0, 4),       // 预分配 4 个 ORDER
+			args:         make([]interface{}, 0, 16), // 预分配 16 个参数
+			scratchEdits: make([]edit, 0, 7),         // 预分配 7 个 edit(buildQuery 子句类型上限)
+			scratchArgs:  make([]any, 0, 24),         // 预分配 24 个参数累积缓冲
 		}
 	},
 }
@@ -78,6 +81,14 @@ func (qr *MySQLQueryResult) reset() {
 	qr.preQuery = ""
 	qr.preArgs = nil
 	qr.dirty = false
+	// 复用 scratch 缓冲(截断到 0,保留底层数组以避免 realloc)
+	qr.scratchEdits = qr.scratchEdits[:0]
+	qr.scratchArgs = qr.scratchArgs[:0]
+	// 释放 WithTimeout 注入的 cancel,避免 ctx cancel 泄漏
+	if qr.cancel != nil {
+		qr.cancel()
+		qr.cancel = nil
+	}
 }
 
 // Start 启动插件，建立数据库连接
@@ -92,10 +103,9 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 	}
 
 	// 配置连接池参数
-	//
-	// MinIdleConns 处理:Go 标准库 database/sql 没有 SetMinIdleConns,
-	// 通过把 SetMaxIdleConns 设为 max(MaxIdleConns, MinIdleConns) 来保证
-	// 连接池至少能保留 MinIdleConns 个空闲连接(不会被回收低于此值)
+	// Go 标准库 database/sql 没有 SetMinIdleConns,通过把 SetMaxIdleConns
+	// 设为 max(MaxIdleConns, MinIdleConns) 来保证连接池至少能保留 MinIdleConns 个
+	// 空闲连接(不会被回收低于此值)
 	db.SetMaxOpenConns(p.config.PoolSize)
 	db.SetMaxIdleConns(effectiveMaxIdleConns(&p.config))
 	db.SetConnMaxLifetime(p.config.MaxLifetime)
@@ -107,9 +117,14 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 		return fmt.Errorf("mysql ping failed: %w", err)
 	}
 
-	// 原子发布 db 句柄,若已存在旧 db 则先关闭(防重入/资源泄漏)
-	if old := p.db.Swap(db); old != nil {
-		_ = old.Close()
+	// 原子发布 db 句柄
+	p.db.Store(db)
+
+	// R07:连接池预热 — 后台 goroutine 主动填充 MinIdleConns 个空闲连接,
+	// 消除冷启动首波查询的连接建立延迟(3 次 TCP/TLS 握手 × N 并发请求的 P99 飙升)
+	// 失败不阻塞 Start,池子会按需懒分配
+	if p.config.MinIdleConns > 0 {
+		go p.warmupPool(db, p.config.MinIdleConns)
 	}
 
 	// 保护低频写入字段（state / queryLogger）
@@ -167,4 +182,33 @@ func (p *MySQLPlugin) Stop(ctx context.Context) error {
 
 	logger.Info("[MySQL] disconnected from %s/%s", p.config.Addr, p.config.DBName)
 	return nil
+}
+
+// warmupPool 后台预热 MinIdleConns 个空闲连接(R07)
+// 串行 Ping n 次;失败不返回(连接池下次 query 时会自动重建)
+// 阻塞直到 stopCh/done 触发
+func (p *MySQLPlugin) warmupPool(db *sqlx.DB, n int) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// 监听 stop 信号以便退出
+	go func() {
+		select {
+		case <-p.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	for i := 0; i < n; i++ {
+		if ctx.Err() != nil {
+			return
+		}
+		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+		if err := db.PingContext(pingCtx); err != nil {
+			pingCancel()
+			// 单次失败不致命,池子会懒分配;继续尝试下一个
+			continue
+		}
+		pingCancel()
+	}
 }
