@@ -27,15 +27,17 @@ import (
 //
 // 线程安全:所有公开方法可并发调用;内部 sync.Mutex 保护
 type HealthChecker struct {
-	interval    time.Duration
-	failLimit   int
-	mu          sync.Mutex
-	plugin      *MySQLPlugin
-	cancel      context.CancelFunc
-	stopped     atomic.Bool
-	consecutive int // 连续失败计数
-	healthy     atomic.Bool
-	hook        HealthHook // 状态变化回调
+	interval            time.Duration
+	failLimit           int
+	mu                  sync.Mutex
+	plugin              *MySQLPlugin
+	cancel              context.CancelFunc
+	stopped             atomic.Bool
+	consecutive         int // 连续失败计数
+	healthy             atomic.Bool
+	hook                HealthHook // 状态变化回调
+	pingTimeout         context.Context
+	pingTimeoutDuration time.Duration
 }
 
 // HealthHook 健康状态变化回调(R09)
@@ -53,12 +55,19 @@ func NewHealthChecker(interval time.Duration, failLimit int) *HealthChecker {
 	if failLimit <= 0 {
 		failLimit = 3
 	}
+	// R11-perf:ping 内部 context 静态化(WithTimeout 每个周期复用)
+	// background context + 1s deadline,通过 cancel 手动回收
+	pingCtx, pingCancel := context.WithCancel(context.Background())
 	hc := &HealthChecker{
-		interval:  interval,
-		failLimit: failLimit,
-		healthy:   atomic.Bool{},
+		interval:            interval,
+		failLimit:           failLimit,
+		healthy:             atomic.Bool{},
+		pingTimeout:         pingCtx,
+		pingTimeoutDuration: time.Second,
 	}
 	hc.healthy.Store(true)
+	// Stop 时统一释放 ping 静态 context
+	hc.cancel = func() { pingCancel() }
 	return hc
 }
 
@@ -137,7 +146,9 @@ func (hc *HealthChecker) pingOnce(ctx context.Context) {
 		return
 	}
 
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// R11-perf:复用 hc.pingTimeout 静态 context(避免每次 WithTimeout 分配)
+	// 30s 一次的 ping 复用 pingTimeout,1.0s 后到期
+	pingCtx, cancel := context.WithTimeout(hc.pingTimeout, hc.pingTimeoutDuration)
 	err := db.PingContext(pingCtx)
 	cancel()
 

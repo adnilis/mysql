@@ -129,10 +129,14 @@ func WithRetry(ctx context.Context, policy RetryPolicy, fn func(context.Context)
 		}
 		logger.Warn("[mysql retry] attempt %d/%d failed: %v; retrying in %v",
 			attempt, policy.MaxAttempts, err, sleep)
+		// R11-perf:用 NewTimer+defer Stop 代替 time.After,避免 timer 泄漏
+		// (time.After 创建的 timer 要等 fire 才被 GC,长退避时累积)
+		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(sleep):
+		case <-timer.C:
 		}
 		// backoff *= multiplier, 上限 MaxBackoff
 		backoff = time.Duration(math.Min(

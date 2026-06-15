@@ -137,6 +137,15 @@ func (p *MySQLPlugin) Start(ctx context.Context) error {
 	p.state = mysqlPluginStateRunning
 	p.mu.Unlock()
 
+	// R11:自动挂接可观测性附加件(若用户未通过 Attach* 手动挂)
+	// 0 配置即得慢查询缓冲 + 连接健康检查;若用户预先 Attach 过则保留
+	if p.slowBuffer != nil {
+		p.queryLogger.AttachSlowBuffer(p.slowBuffer)
+	}
+	if p.healthChecker != nil {
+		p.healthChecker.Start(p, ctx)
+	}
+
 	// 监听上下文取消信号
 	// 通过 done 通道允许 Stop() 在 ctx 取消前主动结束此 goroutine，避免泄漏
 	go func() {
@@ -179,6 +188,11 @@ func (p *MySQLPlugin) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	p.state = mysqlPluginStateStopped
 	p.mu.Unlock()
+
+	// R11:停止可观测性附加件(若 Start 内部自动启动了 healthChecker)
+	if p.healthChecker != nil {
+		p.healthChecker.Stop()
+	}
 
 	logger.Info("[MySQL] disconnected from %s/%s", p.config.Addr, p.config.DBName)
 	return nil

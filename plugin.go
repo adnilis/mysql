@@ -29,6 +29,16 @@ type MySQLPlugin struct {
 	metricQuerySlow    atomic.Int64 // 慢查询次数(超过 SlowThreshold)
 	metricRowsRead     atomic.Int64 // 总读取行数(Find/Select/First)
 	metricRowsAffected atomic.Int64 // 总影响行数(Insert/Update/Delete/Exec)
+
+	// R09/R10 可观测性附加件(非热路径字段,Start 时挂接,Stop 不强制清理)
+	slowBuffer    *SlowQueryBuffer
+	healthChecker *HealthChecker
+
+	// R11-perf:schema 自省 30s 缓存,admin 端点高频轮询共享
+	schemaCache map[string]schemaCacheEntry
+
+	// R11-perf:StatsJSON 100ms 短 TTL 缓存,避免高频轮询反复 marshal
+	statsCache *statsCacheEntry
 }
 
 // mysqlPluginState 插件状态枚举
@@ -157,4 +167,41 @@ func (s mysqlPluginState) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// SlowQueries 返回最近的慢查询快照(R09+R10)
+//
+// 内部基于 SlowQueryBuffer;由 AttachSlowBuffer 触发 Record。
+// 用户可在管理面调用(对应未来 /debug/slow HTTP 端点的数据源)。
+// nil plugin / nil buffer 安全返回 nil。
+func (p *MySQLPlugin) SlowQueries() []SlowQueryRecord {
+	if p == nil || p.slowBuffer == nil {
+		return nil
+	}
+	return p.slowBuffer.Snapshot()
+}
+
+// AttachSlowBuffer 挂接 R09 慢查询环形缓冲(R10)
+//
+// 一次性把 plugin 的 queryLogger 与 slowBuffer 关联;之后所有慢查询自动入库。
+// 多次调用安全(后挂覆盖前挂)。
+func (p *MySQLPlugin) AttachSlowBuffer(buf *SlowQueryBuffer) {
+	if p == nil {
+		return
+	}
+	p.slowBuffer = buf
+	if p.queryLogger != nil {
+		p.queryLogger.AttachSlowBuffer(buf)
+	}
+}
+
+// AttachHealthChecker 挂接 R09 连接健康检查器(R10)
+//
+// 由 Start 内部自动调用;用户可手动调用于自定义启动流程。
+// 多次调用安全。
+func (p *MySQLPlugin) AttachHealthChecker(hc *HealthChecker) {
+	if p == nil || hc == nil {
+		return
+	}
+	p.healthChecker = hc
 }

@@ -2,8 +2,8 @@ package plugins
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"hash/fnv"
+	"strconv"
 	"sync"
 
 	"github.com/jmoiron/sqlx"
@@ -164,9 +164,13 @@ func (c *PrepareCache) unlink(e *prepareCacheEntry) {
 	e.prev, e.next = nil, nil
 }
 
-// hashQuery 用 SHA256 哈希 SQL 作为缓存 key
-// 比直接用 SQL 字符串作 key 节省 map 内部 hash 比较开销
+// hashQuery 用 FNV-1a 64-bit 哈希 SQL 作为缓存 key(R11-perf)
+//
+// 比 SHA256 快约 5-10x(无加密轮,只是快速混合),
+// 64-bit 输出冲突概率对缓存场景已足够(1.8e19 个不同 SQL 才 50% 冲突)
 func hashQuery(q string) string {
-	sum := sha256.Sum256([]byte(q))
-	return hex.EncodeToString(sum[:8]) // 64-bit 哈希,冲突概率极低
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(q))
+	// 直接返回 uint64 的字符串(无 hex 编码分配)
+	return strconv.FormatUint(h.Sum64(), 16)
 }

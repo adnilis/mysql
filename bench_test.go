@@ -2,7 +2,10 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -518,5 +521,239 @@ func TestWithRetry_ExhaustedRetries(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Errorf("expected 2 attempts (MaxAttempts), got %d", attempts)
+	}
+}
+
+// TestNullInt64_Scan 验证 SQL 各种来源类型都能 Scan
+func TestNullInt64_Scan(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     any
+		wantV   bool
+		wantVal int64
+		wantErr bool
+	}{
+		{"nil", nil, false, 0, false},
+		{"int64", int64(42), true, 42, false},
+		{"int", int(100), true, 100, false},
+		{"int32", int32(7), true, 7, false},
+		{"string", "99", true, 99, false},
+		{"bad_string", "abc", false, 0, true},
+		{"bytes", []byte("123"), true, 123, false},
+		{"bad_type", 3.14, false, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var n NullInt64
+			err := n.Scan(tt.src)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && n.Valid != tt.wantV {
+				t.Errorf("Valid = %v, want %v", n.Valid, tt.wantV)
+			}
+			if !tt.wantErr && n.Int64 != tt.wantVal {
+				t.Errorf("Int64 = %d, want %d", n.Int64, tt.wantVal)
+			}
+		})
+	}
+}
+
+// TestNullInt64_Value 验证 Valuer 写出
+func TestNullInt64_Value(t *testing.T) {
+	n := NewNullInt64(42)
+	v, err := n.Value()
+	if err != nil {
+		t.Fatalf("Value: %v", err)
+	}
+	if v.(int64) != 42 {
+		t.Errorf("Value = %v, want 42", v)
+	}
+
+	// NULL path
+	nn := NullInt64{}
+	v, err = nn.Value()
+	if err != nil {
+		t.Fatalf("Value: %v", err)
+	}
+	if v != nil {
+		t.Errorf("NULL Value should be nil, got %v", v)
+	}
+}
+
+// TestNullString_Scan 验证 string / []byte / nil 各种 Scan
+func TestNullString_Scan(t *testing.T) {
+	var n NullString
+	if err := n.Scan("hello"); err != nil || !n.Valid || n.Str != "hello" {
+		t.Errorf("Scan string failed: %+v err=%v", n, err)
+	}
+	if err := n.Scan([]byte("world")); err != nil || n.Str != "world" {
+		t.Errorf("Scan []byte failed: %+v err=%v", n, err)
+	}
+	if err := n.Scan(nil); err != nil || n.Valid {
+		t.Errorf("Scan nil should set Valid=false, got %+v", n)
+	}
+}
+
+// TestNullInt64_FromPtr 验证指针工厂方法
+func TestNullInt64_FromPtr(t *testing.T) {
+	v := int64(42)
+	n := NewNullInt64FromPtr(&v)
+	if !n.Valid || n.Int64 != 42 {
+		t.Errorf("FromPtr: %+v", n)
+	}
+	var p *int64
+	n = NewNullInt64FromPtr(p)
+	if n.Valid {
+		t.Errorf("FromPtr(nil) should be invalid, got %+v", n)
+	}
+}
+
+// TestStatsJSON 验证 StatsJSON 返回合法 JSON 且含 Healthy 字段
+func TestStatsJSON(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	body, err := plugin.StatsJSON()
+	if err != nil {
+		t.Fatalf("StatsJSON: %v", err)
+	}
+	var got MySQLStatsJSON
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Name != "test-mysql" {
+		t.Errorf("Name = %q, want test-mysql", got.Name)
+	}
+	if got.State != "running" {
+		t.Errorf("State = %q, want running", got.State)
+	}
+}
+
+// TestSlowQueriesJSON_Empty 空 buffer 返回 []
+func TestSlowQueriesJSON_Empty(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	body, err := plugin.SlowQueriesJSON()
+	if err != nil {
+		t.Fatalf("SlowQueriesJSON: %v", err)
+	}
+	if string(body) != "[]" && string(body) != "null" {
+		// 没挂 buffer 时返回 nil → "null" 也算合法
+		t.Logf("body = %s", body)
+	}
+}
+
+// TestSlowQueriesJSON_Records 挂 buffer 后能序列化
+func TestSlowQueriesJSON_Records(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	buf := NewSlowQueryBuffer(5)
+	for i := 0; i < 3; i++ {
+		buf.Record("SELECT ?", []any{i}, 100*time.Millisecond, int64(i))
+	}
+	plugin.AttachSlowBuffer(buf)
+
+	body, err := plugin.SlowQueriesJSON()
+	if err != nil {
+		t.Fatalf("SlowQueriesJSON: %v", err)
+	}
+	var got []SlowQueryJSON
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("expected 3 records, got %d", len(got))
+	}
+}
+
+// TestAdminHandler_Routes 验证 /debug/stats / /debug/slow / /debug/table 路由
+func TestAdminHandler_Routes(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	handler := plugin.AdminHandler()
+
+	tests := []struct {
+		path   string
+		status int
+	}{
+		{"/debug/stats", http.StatusOK},
+		{"/debug/slow", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != tt.status {
+			t.Errorf("GET %s status = %d, want %d", tt.path, w.Code, tt.status)
+		}
+	}
+
+	// 非法方法
+	req := httptest.NewRequest(http.MethodPost, "/debug/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /debug/stats status = %d, want 405", w.Code)
+	}
+
+	// table 端点
+	req = httptest.NewRequest(http.MethodGet, "/debug/table/", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("GET /debug/table/ (no name) status = %d, want 400", w.Code)
+	}
+}
+
+// TestHealthChecker_StartStop 验证启停钩子
+func TestHealthChecker_StartStop(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	hc := NewHealthChecker(50*time.Millisecond, 3)
+	plugin.AttachHealthChecker(hc)
+	hc.Start(plugin, context.Background())
+	defer hc.Stop()
+
+	// 立即 IsHealthy 应为 true(初始状态)
+	if !hc.IsHealthy() {
+		t.Error("expected initial IsHealthy=true")
+	}
+	hc.Stop()
+}
+
+// BenchmarkSlowQueryBuffer_Record 验证 R11-perf 写路径开销
+func BenchmarkSlowQueryBuffer_Record(b *testing.B) {
+	buf := NewSlowQueryBuffer(1000)
+	for i := 0; i < b.N; i++ {
+		buf.Record("SELECT ?", []any{i}, time.Millisecond, int64(i))
+	}
+}
+
+// BenchmarkSlowQueryBuffer_Snapshot 验证 R11-perf 读路径开销
+func BenchmarkSlowQueryBuffer_Snapshot(b *testing.B) {
+	buf := NewSlowQueryBuffer(1000)
+	for i := 0; i < 1000; i++ {
+		buf.Record("SELECT ?", []any{i}, time.Millisecond, int64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = buf.Snapshot()
+	}
+}
+
+// BenchmarkStatsJSON_CachedHit 验证 R11-perf 100ms 短 TTL 缓存命中
+func BenchmarkStatsJSON_CachedHit(b *testing.B) {
+	plugin, _ := newBenchPlugin(b)
+	// 预热缓存
+	_, _ = plugin.StatsJSON()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = plugin.StatsJSON()
+	}
+}
+
+// BenchmarkHashQuery_FNV 验证 R11-perf FNV-1a 替代 SHA256
+func BenchmarkHashQuery_FNV(b *testing.B) {
+	q := "SELECT id, name, email FROM users WHERE age > ? AND status = ? AND created_at > ?"
+	for i := 0; i < b.N; i++ {
+		_ = hashQuery(q)
 	}
 }

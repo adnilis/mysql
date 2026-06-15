@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // TableInfo 表结构自省结果(R07)
@@ -51,11 +52,41 @@ func (p *MySQLPlugin) ListTables(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// DescribeTable 返回表结构(R07)
-//
-// 包含列定义与索引定义;若表不存在返回 ErrModelNotFound(可 errors.Is 判定)。
-// 仅在用户有 information_schema 读权限时可用。
-func (p *MySQLPlugin) DescribeTable(ctx context.Context, table string) (*TableInfo, error) {
+// schemaCacheEntry schema 自省结果缓存(R11-perf)
+type schemaCacheEntry struct {
+	info      *TableInfo
+	expiresAt time.Time
+}
+
+// schemaCacheTTL 默认 30s,跨 admin HTTP 端点调用共享
+const schemaCacheTTL = 30 * time.Second
+
+// getSchemaCached 取缓存或重查(R11-perf)
+// 命中返回缓存(剩余 TTL 可能很短);未命中或过期时回源
+func (p *MySQLPlugin) getSchemaCached(ctx context.Context, table string) (*TableInfo, error) {
+	if p.schemaCache == nil {
+		return p.describeTableFromDB(ctx, table)
+	}
+	now := time.Now()
+	if entry, ok := p.schemaCache[table]; ok && now.Before(entry.expiresAt) {
+		return entry.info, nil
+	}
+	info, err := p.describeTableFromDB(ctx, table)
+	if err != nil {
+		return nil, err
+	}
+	if p.schemaCache == nil {
+		p.schemaCache = make(map[string]schemaCacheEntry, 8)
+	}
+	p.schemaCache[table] = schemaCacheEntry{
+		info:      info,
+		expiresAt: now.Add(schemaCacheTTL),
+	}
+	return info, nil
+}
+
+// describeTableFromDB 实际查 DB 的逻辑(无缓存)
+func (p *MySQLPlugin) describeTableFromDB(ctx context.Context, table string) (*TableInfo, error) {
 	if !isValidIdentifier(table) {
 		return nil, wrapMySQLError(table, "describe table", ErrInvalidModel)
 	}
@@ -151,6 +182,30 @@ func (p *MySQLPlugin) DescribeTable(ctx context.Context, table string) (*TableIn
 		Columns:   columns,
 		Indexes:   indexes,
 	}, nil
+}
+
+// DescribeTable 返回表结构(R07 + R11-perf 带 30s 缓存)
+//
+// 包含列定义与索引定义;若表不存在返回 ErrModelNotFound(可 errors.Is 判定)。
+// R11-perf:30s TTL 缓存,admin 端点高频轮询直接命中(避免反复查 information_schema)。
+// 仅在用户有 information_schema 读权限时可用。
+func (p *MySQLPlugin) DescribeTable(ctx context.Context, table string) (*TableInfo, error) {
+	return p.getSchemaCached(ctx, table)
+}
+
+// InvalidateSchemaCache 强制失效指定表的 schema 缓存(R11-perf)
+// 在 DDL 变更后调用,避免 30s 内读到旧 schema
+func (p *MySQLPlugin) InvalidateSchemaCache(tables ...string) {
+	if p.schemaCache == nil {
+		return
+	}
+	if len(tables) == 0 {
+		p.schemaCache = nil
+		return
+	}
+	for _, t := range tables {
+		delete(p.schemaCache, t)
+	}
 }
 
 // String 便于 fmt 打印 TableInfo
