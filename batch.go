@@ -48,6 +48,136 @@ func (p *MySQLPlugin) BatchInsert(ctx context.Context, models []IModel, batchSiz
 	return allIDs, nil
 }
 
+// BatchInsertOnConflict IModel 版批量 upsert(R09)
+//
+// 与 BatchInsert 的区别:每批追加 ON DUPLICATE KEY UPDATE 子句,冲突时按
+// conflictCols 触发并更新其他列。所有 models 必须实现相同 IModel 类型以确保
+// SQL 模板一致(取第一批第一个的 scanner)。
+//
+// 参数:
+//   - models      : 要插入/更新的模型列表
+//   - batchSize   : 每批的行数(0 = 默认 200)
+//   - conflictCols: 触发 ON DUPLICATE KEY 的列(可空;为空时使用 db:"<col>,pk" 标记)
+//
+// 返回:每批 FirstInsertID 的列表(1=插入 / 2=更新 / 0=无变化;语义由 MySQL 返回)
+func (p *MySQLPlugin) BatchInsertOnConflict(ctx context.Context, models []IModel, batchSize int, conflictCols ...string) ([]int64, error) {
+	if len(models) == 0 {
+		return []int64{}, nil
+	}
+	if batchSize <= 0 {
+		batchSize = 200
+	}
+
+	db, err := p.getDB()
+	if err != nil {
+		return nil, err
+	}
+
+	// 用第一批第一个 model 解析表结构(所有 model 类型必须相同)
+	scanner := newFieldScanner(models[0])
+	if scanner.meta == nil || len(scanner.meta.columns) == 0 {
+		return nil, wrapMySQLError(scanner.table, "batch insert on conflict", fmt.Errorf("no columns"))
+	}
+
+	// 解析 conflict 列集合
+	pk := scanner.meta.pkColumn
+	if pk == "" {
+		pk = "id"
+	}
+	if len(conflictCols) == 0 {
+		conflictCols = []string{pk}
+	}
+	conflictSet := make(map[string]bool, len(conflictCols))
+	for _, c := range conflictCols {
+		if !isValidIdentifier(c) {
+			return nil, wrapMySQLError(scanner.table, "batch insert on conflict", fmt.Errorf("invalid conflict col: %s", c))
+		}
+		conflictSet[c] = true
+	}
+
+	// 预拼 update 子句(只在 conflict 列之外)
+	var updateClause strings.Builder
+	updateClause.WriteString(" ON DUPLICATE KEY UPDATE ")
+	first := true
+	for _, col := range scanner.meta.columns {
+		if conflictSet[col] {
+			continue
+		}
+		if !first {
+			updateClause.WriteString(", ")
+		}
+		first = false
+		updateClause.WriteString(col)
+		updateClause.WriteString(" = VALUES(")
+		updateClause.WriteString(col)
+		updateClause.WriteString(")")
+	}
+	updateSQL := updateClause.String()
+
+	// 预拼单行占位符
+	rowPlaceholder := "(" + strings.TrimRight(strings.Repeat("?,", len(scanner.meta.columns)), ",") + ")"
+
+	allIDs := make([]int64, 0, len(models))
+	for start := 0; start < len(models); start += batchSize {
+		end := start + batchSize
+		if end > len(models) {
+			end = len(models)
+		}
+		batch := models[start:end]
+
+		// 构造单批 SQL
+		var sb strings.Builder
+		sb.Grow(32 + len(scanner.table) + len(scanner.meta.columns)*8 + len(batch)*(len(rowPlaceholder)+2) + len(updateSQL))
+		sb.WriteString("INSERT INTO ")
+		sb.WriteString(scanner.table)
+		sb.WriteString(" (")
+		for i, col := range scanner.meta.columns {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(col)
+		}
+		sb.WriteString(") VALUES ")
+		for i := range batch {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(rowPlaceholder)
+		}
+		sb.WriteString(updateSQL)
+		query := sb.String()
+
+		// 展开所有 model 字段值到一维 args
+		var values []any
+		for _, m := range batch {
+			fs := newFieldScanner(m)
+			fsVals := fs.dbFields()
+			if values == nil {
+				values = make([]any, 0, len(fsVals)*len(batch))
+			}
+			for _, fv := range fsVals {
+				values = append(values, fv.value)
+			}
+		}
+		if values == nil {
+			values = []any{}
+		}
+
+		t := time.Now()
+		result, err := db.ExecContext(ctx, query, values...)
+		duration := time.Since(t)
+		if err != nil {
+			p.queryLogger.LogError(ctx, query, duration, err, values...)
+			return allIDs, wrapMySQLError(scanner.table, "batch insert on conflict", err)
+		}
+		// 此函数不返回每行 ID(因 ON DUPLICATE 不连续),只累计 RowsAffected
+		affected, _ := result.RowsAffected()
+		allIDs = append(allIDs, affected)
+		p.logQ(ctx, "BATCH_INSERT_ON_CONFLICT", query, duration, affected, values...)
+	}
+	return allIDs, nil
+}
+
 // BatchExec 通用多行 INSERT 助手(接受 [][]any 而非 []IModel)
 //
 // 适用场景:mail DAO 等无 IModel 的多行写入,或动态列名/动态行数据的批量插入。

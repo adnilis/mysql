@@ -175,3 +175,107 @@ func (t *TableInfo) String() string {
 	}
 	return sb.String()
 }
+
+// ListIndexes 列出当前 DB 中所有非主键索引(R08)
+//
+// 主键索引(PRIMARY)不在此返回;按 (TABLE_NAME, INDEX_NAME) 排序。
+// 可用于代码生成器扫描数据库的全部索引,生成对应的 DAO 辅助方法。
+func (p *MySQLPlugin) ListIndexes(ctx context.Context) ([]IndexDef, error) {
+	db, err := p.getDB()
+	if err != nil {
+		return nil, err
+	}
+	const query = `SELECT INDEX_NAME, TABLE_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ? AND INDEX_NAME != 'PRIMARY'
+		ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`
+
+	type row struct {
+		IndexName  string `db:"INDEX_NAME"`
+		TableName  string `db:"TABLE_NAME"`
+		ColumnName string `db:"COLUMN_NAME"`
+		Seq        int    `db:"SEQ_IN_INDEX"`
+		NonUnique  int    `db:"NON_UNIQUE"`
+	}
+	var rows []row
+	if err := db.SelectContext(ctx, &rows, query, p.config.DBName); err != nil {
+		return nil, wrapMySQLError(p.config.DBName, "list indexes", err)
+	}
+
+	// 按 (table, index) 分组
+	idxMap := make(map[string]*IndexDef, 8)
+	idxOrder := make([]string, 0, 8)
+	for _, r := range rows {
+		key := r.TableName + "." + r.IndexName
+		idx, ok := idxMap[key]
+		if !ok {
+			idx = &IndexDef{
+				Name:    r.IndexName,
+				Unique:  r.NonUnique == 0,
+				Primary: false,
+			}
+			idxMap[key] = idx
+			idxOrder = append(idxOrder, key)
+		}
+		idx.Columns = append(idx.Columns, r.ColumnName)
+	}
+	result := make([]IndexDef, 0, len(idxOrder))
+	for _, k := range idxOrder {
+		result = append(result, *idxMap[k])
+	}
+	p.logQ(ctx, "LIST_INDEXES", query, 0, int64(len(result)), p.config.DBName)
+	return result, nil
+}
+
+// DescribeIndex 返回单表的所有索引(R08)
+//
+// 含主键索引(PRIMARY);若表不存在返回 ErrModelNotFound。
+func (p *MySQLPlugin) DescribeIndex(ctx context.Context, table string) ([]IndexDef, error) {
+	if !isValidIdentifier(table) {
+		return nil, wrapMySQLError(table, "describe index", ErrInvalidModel)
+	}
+	db, err := p.getDB()
+	if err != nil {
+		return nil, err
+	}
+	const query = `SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+		ORDER BY INDEX_NAME, SEQ_IN_INDEX`
+
+	type row struct {
+		IndexName  string `db:"INDEX_NAME"`
+		ColumnName string `db:"COLUMN_NAME"`
+		Seq        int    `db:"SEQ_IN_INDEX"`
+		NonUnique  int    `db:"NON_UNIQUE"`
+	}
+	var rows []row
+	if err := db.SelectContext(ctx, &rows, query, p.config.DBName, table); err != nil {
+		return nil, wrapMySQLError(table, "describe index", err)
+	}
+	if len(rows) == 0 {
+		return nil, wrapMySQLError(table, "describe index", ErrModelNotFound)
+	}
+
+	idxMap := make(map[string]*IndexDef, 4)
+	idxOrder := make([]string, 0, 4)
+	for _, r := range rows {
+		idx, ok := idxMap[r.IndexName]
+		if !ok {
+			idx = &IndexDef{
+				Name:    r.IndexName,
+				Unique:  r.NonUnique == 0,
+				Primary: r.IndexName == "PRIMARY",
+			}
+			idxMap[r.IndexName] = idx
+			idxOrder = append(idxOrder, r.IndexName)
+		}
+		idx.Columns = append(idx.Columns, r.ColumnName)
+	}
+	result := make([]IndexDef, 0, len(idxOrder))
+	for _, k := range idxOrder {
+		result = append(result, *idxMap[k])
+	}
+	p.logQ(ctx, "DESCRIBE_INDEX", query, 0, int64(len(result)), p.config.DBName, table)
+	return result, nil
+}

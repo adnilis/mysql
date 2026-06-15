@@ -540,6 +540,119 @@ func (p *MySQLPlugin) Find(ctx context.Context, dest any, query string, args ...
 	return p.Select(ctx, dest, query, args...)
 }
 
+// BulkUpdate 单条 SQL 批量更新(R08):
+//
+//	UPDATE t SET col = CASE pk
+//	  WHEN ? THEN ?
+//	  WHEN ? THEN ?
+//	  ...
+//	END WHERE pk IN (?, ?, ...)
+//
+// 适用场景:批量改一列不同值(库存批量扣减、批量状态修改等),
+// 替代 per-row UPDATE 循环 — 单条 SQL 单次网络往返,N 倍延迟缩减为 1。
+//
+// 参数:
+//   - table  : 表名
+//   - pkCol  : 主键列名(必须有索引)
+//   - ids    : 主键值列表(必须与 values 等长)
+//   - col    : 要更新的列名
+//   - values : 每个主键对应的新值(必须与 ids 等长)
+//
+// 限制:MySQL CASE WHEN 默认 16 层限制;values 列表超过 16 时,自动分片
+// 多条 UPDATE(单条 IN 列表不超 1000 个值,避免 max_allowed_packet)。
+//
+// 返回:总受影响行数(累加各分片)
+func (p *MySQLPlugin) BulkUpdate(ctx context.Context, table, pkCol string, ids []any, col string, values []any) (int64, error) {
+	if !isValidIdentifier(table) {
+		return 0, wrapMySQLError(table, "bulk update", ErrInvalidModel)
+	}
+	if !isValidIdentifier(pkCol) {
+		return 0, wrapMySQLError(table, "bulk update", fmt.Errorf("invalid pk column: %s", pkCol))
+	}
+	if !isValidIdentifier(col) {
+		return 0, wrapMySQLError(table, "bulk update", fmt.Errorf("invalid update column: %s", col))
+	}
+	if len(ids) != len(values) {
+		return 0, wrapMySQLError(table, "bulk update",
+			fmt.Errorf("ids and values length mismatch: %d vs %d", len(ids), len(values)))
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if col == pkCol {
+		return 0, wrapMySQLError(table, "bulk update", fmt.Errorf("update column equals pk column"))
+	}
+
+	db, err := p.getDB()
+	if err != nil {
+		return 0, err
+	}
+
+	// 自动分片:每片 CASE WHEN 不超 16 个,IN 不超 256 个
+	const caseChunk = 16
+	const inChunk = 256
+	var totalAffected int64
+
+	for start := 0; start < len(ids); start += caseChunk {
+		caseEnd := start + caseChunk
+		if caseEnd > len(ids) {
+			caseEnd = len(ids)
+		}
+		// 把这一片拆成 IN 子片
+		for inStart := start; inStart < caseEnd; inStart += inChunk {
+			inEnd := inStart + inChunk
+			if inEnd > caseEnd {
+				inEnd = caseEnd
+			}
+			chunkIDs := ids[inStart:inEnd]
+			chunkVals := values[inStart:inEnd]
+
+			// 构造 SQL
+			var sb strings.Builder
+			sb.Grow(64 + len(table)*2 + len(pkCol) + len(col) + len(chunkIDs)*32)
+			sb.WriteString("UPDATE ")
+			sb.WriteString(table)
+			sb.WriteString(" SET ")
+			sb.WriteString(col)
+			sb.WriteString(" = CASE ")
+			sb.WriteString(pkCol)
+			for range chunkIDs {
+				sb.WriteString(" WHEN ? THEN ?")
+			}
+			sb.WriteString(" END WHERE ")
+			sb.WriteString(pkCol)
+			sb.WriteString(" IN (")
+			for i := range chunkIDs {
+				if i > 0 {
+					sb.WriteString(",")
+				}
+				sb.WriteString("?")
+			}
+			sb.WriteString(")")
+			query := sb.String()
+
+			// 参数顺序:VALUES(p1,v1,p2,v2,...) + IN(p1,p2,...)
+			args := make([]any, 0, len(chunkIDs)*3)
+			for i := range chunkIDs {
+				args = append(args, chunkIDs[i], chunkVals[i])
+			}
+			args = append(args, chunkIDs...)
+
+			t := time.Now()
+			result, err := db.ExecContext(ctx, query, args...)
+			duration := time.Since(t)
+			if err != nil {
+				p.queryLogger.LogError(ctx, query, duration, err, args...)
+				return totalAffected, wrapMySQLError(table, "bulk update", err)
+			}
+			affected, _ := result.RowsAffected()
+			totalAffected += affected
+			p.logQ(ctx, "BULK_UPDATE", query, duration, affected, args...)
+		}
+	}
+	return totalAffected, nil
+}
+
 // SaveOnConflict IModel 版 upsert(MySQL INSERT ... ON DUPLICATE KEY UPDATE)
 //
 // 适用场景:计数器/用户元数据/配置 等需要"有则更新、无则插入"的单条写入,

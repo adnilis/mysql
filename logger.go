@@ -123,6 +123,19 @@ func (ql *QueryLogger) LogSlowQuery(ctx context.Context, query string, duration 
 	}
 }
 
+// AttachSlowBuffer 把 R09 慢查询环形缓冲挂到 slow hook(R09)
+//
+// 调用一次后,所有通过此 logger 的慢查询都会被记录到 buffer;
+// 外部可经 plugin.GetSlowQueries() 读取快照(后续 R10 可挂 /debug/slow HTTP 端点)。
+func (ql *QueryLogger) AttachSlowBuffer(buf *SlowQueryBuffer) {
+	if ql == nil || buf == nil {
+		return
+	}
+	ql.SetSlowQueryHook(func(ctx context.Context, query string, duration time.Duration, rowsAffected int64, args ...any) {
+		buf.Record(query, args, duration, rowsAffected)
+	})
+}
+
 // LogError 记录错误日志（对 nil logger 与 nil err 都安全）
 // 格式: [ERROR 5.123ms] INSERT INTO `users` (`name`) VALUES (?)
 // Error: Duplicate entry 'John' for key 'idx_name'

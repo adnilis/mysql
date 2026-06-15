@@ -671,3 +671,86 @@ func TestListTables_Valid(t *testing.T) {
 		t.Errorf("unexpected tables: %v", tables)
 	}
 }
+
+// TestBulkUpdate_SingleChunk 验证单 chunk(<=16 行)单条 SQL CASE WHEN
+func TestBulkUpdate_SingleChunk(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectExec(`UPDATE inventory SET stock = CASE id WHEN \? THEN \? WHEN \? THEN \? WHEN \? THEN \? END WHERE id IN \(\?,\?,\?\)`).
+		WithArgs(1, 100, 2, 200, 3, 300, 1, 2, 3).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+
+	affected, err := plugin.BulkUpdate(context.Background(), "inventory", "id",
+		[]any{1, 2, 3}, "stock", []any{100, 200, 300})
+	if err != nil {
+		t.Fatalf("BulkUpdate failed: %v", err)
+	}
+	if affected != 3 {
+		t.Errorf("expected 3 affected, got %d", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestBulkUpdate_AutoChunk 验证 >16 行自动分片
+func TestBulkUpdate_AutoChunk(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	// 20 行 → 2 chunk:[0:16] + [16:20]
+	// 第一个 chunk:16 个 WHEN
+	mock.ExpectExec(`UPDATE t SET score = CASE id WHEN \? THEN \? .* END WHERE id IN \(\?.*\)`).
+		WillReturnResult(sqlmock.NewResult(0, 16))
+	// 第二个 chunk:4 个 WHEN
+	mock.ExpectExec(`UPDATE t SET score = CASE id WHEN \? THEN \? WHEN \? THEN \? WHEN \? THEN \? WHEN \? THEN \? END WHERE id IN \(\?,\?,\?,\?\)`).
+		WillReturnResult(sqlmock.NewResult(0, 4))
+
+	ids := make([]any, 20)
+	values := make([]any, 20)
+	for i := range ids {
+		ids[i] = i + 1
+		values[i] = (i + 1) * 10
+	}
+	affected, err := plugin.BulkUpdate(context.Background(), "t", "id", ids, "score", values)
+	if err != nil {
+		t.Fatalf("BulkUpdate failed: %v", err)
+	}
+	if affected != 20 {
+		t.Errorf("expected 20 affected, got %d", affected)
+	}
+}
+
+// TestBulkUpdate_Empty 空 ids 直接返回
+func TestBulkUpdate_Empty(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	affected, err := plugin.BulkUpdate(context.Background(), "t", "id", nil, "score", nil)
+	if err != nil {
+		t.Errorf("empty BulkUpdate should not error, got %v", err)
+	}
+	if affected != 0 {
+		t.Errorf("expected 0 affected, got %d", affected)
+	}
+}
+
+// TestBulkUpdate_LengthMismatch ids 与 values 长度不匹配
+func TestBulkUpdate_LengthMismatch(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	_, err := plugin.BulkUpdate(context.Background(), "t", "id",
+		[]any{1, 2, 3}, "score", []any{100})
+	if err == nil {
+		t.Fatal("expected length mismatch error")
+	}
+}
+
+// TestBulkUpdate_PkEqualsUpdate 拒绝 update 列 = pk 列
+func TestBulkUpdate_PkEqualsUpdate(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	_, err := plugin.BulkUpdate(context.Background(), "t", "id",
+		[]any{1}, "id", []any{2})
+	if err == nil {
+		t.Fatal("expected error when update col == pk col")
+	}
+}
