@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -633,7 +634,7 @@ func TestStatsJSON(t *testing.T) {
 func TestSlowQueriesJSON_Empty(t *testing.T) {
 	plugin, _ := newTestPlugin(t)
 
-	body, err := plugin.SlowQueriesJSON()
+	body, err := plugin.SlowQueriesJSON(true)
 	if err != nil {
 		t.Fatalf("SlowQueriesJSON: %v", err)
 	}
@@ -652,7 +653,7 @@ func TestSlowQueriesJSON_Records(t *testing.T) {
 	}
 	plugin.AttachSlowBuffer(buf)
 
-	body, err := plugin.SlowQueriesJSON()
+	body, err := plugin.SlowQueriesJSON(true)
 	if err != nil {
 		t.Fatalf("SlowQueriesJSON: %v", err)
 	}
@@ -755,5 +756,284 @@ func BenchmarkHashQuery_FNV(b *testing.B) {
 	q := "SELECT id, name, email FROM users WHERE age > ? AND status = ? AND created_at > ?"
 	for i := 0; i < b.N; i++ {
 		_ = hashQuery(q)
+	}
+}
+
+// TestMetricsOpenMetrics 验证 Prometheus 格式输出
+func TestMetricsOpenMetrics(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+
+	metrics := plugin.MetricsOpenMetrics()
+	s := string(metrics)
+
+	wantSubstrings := []string{
+		"# HELP mysql_query_total",
+		"# TYPE mysql_query_total counter",
+		`mysql_query_total{plugin="test-mysql"} 0`,
+		"# HELP mysql_health",
+		"# TYPE mysql_health gauge",
+		`mysql_health{plugin="test-mysql"} 1`,
+		`mysql_connections{plugin="test-mysql",state="open"}`,
+		`mysql_connections{plugin="test-mysql",state="in_use"}`,
+		`mysql_connections{plugin="test-mysql",state="idle"}`,
+	}
+	for _, sub := range wantSubstrings {
+		if !strings.Contains(s, sub) {
+			t.Errorf("metrics missing %q\nfull output:\n%s", sub, s)
+		}
+	}
+}
+
+// TestAdminHandler_AuthToken 验证 R12 token 鉴权
+func TestAdminHandler_AuthToken(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	plugin.SetAdminAuthToken("secret-token-123")
+	handler := plugin.AdminHandler()
+
+	// 无 token → 401
+	req := httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", w.Code)
+	}
+
+	// 错 token → 401
+	req = httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+	req.Header.Set("X-MySQL-Admin-Token", "wrong")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("wrong token: status = %d, want 401", w.Code)
+	}
+
+	// 正确 token → 200
+	req = httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+	req.Header.Set("X-MySQL-Admin-Token", "secret-token-123")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("correct token: status = %d, want 200", w.Code)
+	}
+}
+
+// TestAdminHandler_MetricsEndpoint 验证 /metrics 端点
+func TestAdminHandler_MetricsEndpoint(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	handler := plugin.AdminHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /metrics status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+	if !strings.Contains(w.Body.String(), "mysql_query_total") {
+		t.Errorf("body missing mysql_query_total: %s", w.Body.String())
+	}
+}
+
+// TestWithMockTx 验证 R12 事务测试 helper
+func TestWithMockTx(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := plugin.WithMockTx(context.Background(), func(tx *MySQLTransaction) error {
+		_, err := tx.Exec(context.Background(), "INSERT INTO users VALUES (?, ?)", 1, "alice")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("WithMockTx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestWithMockTx_RollsBackOnError 验证 fn 错误触发 Rollback
+func TestWithMockTx_RollsBackOnError(t *testing.T) {
+	plugin, mock := newTestPlugin(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectRollback()
+
+	fnErr := errors.New("simulated error")
+	err := plugin.WithMockTx(context.Background(), func(tx *MySQLTransaction) error {
+		_, _ = tx.Exec(context.Background(), "INSERT INTO users VALUES (?, ?)", 1, "alice")
+		return fnErr
+	})
+	if !errors.Is(err, fnErr) {
+		t.Errorf("expected fn err, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled: %v", err)
+	}
+}
+
+// TestAdminHandler_RateLimit 验证 R12+ 限流触发 429
+func TestAdminHandler_RateLimit(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	// 1 req/s, burst 2(允许前 2 个连续,后续需等令牌补充)
+	plugin.SetAdminRateLimit(1, 2)
+	handler := plugin.AdminHandler()
+
+	// 前 2 个请求应成功(burst 用满)
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("burst request %d: status = %d, want 200", i, w.Code)
+		}
+	}
+
+	// 第 3 个应被限流
+	req := httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("rate-limited request: status = %d, want 429", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on 429")
+	}
+}
+
+// TestAdminHandler_DisableRateLimit 验证 SetAdminRateLimit(0,0) 禁用
+func TestAdminHandler_DisableRateLimit(t *testing.T) {
+	plugin, _ := newTestPlugin(t)
+	plugin.SetAdminRateLimit(0, 0) // 禁用
+	handler := plugin.AdminHandler()
+
+	// 连发 10 个请求应都成功(无限流)
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/debug/stats", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("request %d: status = %d, want 200", i, w.Code)
+		}
+	}
+}
+
+// TestRetryBudget_OpensAtThreshold 验证失败达到阈值触发熔断
+func TestRetryBudget_OpensAtThreshold(t *testing.T) {
+	b := NewRetryBudget(3, 50*time.Millisecond)
+	for i := 0; i < 3; i++ {
+		b.RecordFailure()
+	}
+	if !b.IsOpen() {
+		t.Error("expected circuit open after threshold failures")
+	}
+	// 立即 Allow 应被拒(熔断中)
+	if b.Allow() {
+		t.Error("expected Allow=false immediately after open")
+	}
+	// 等 cooldown 过后再试
+	time.Sleep(60 * time.Millisecond)
+	if !b.Allow() {
+		t.Error("expected Allow=true after cooldown")
+	}
+}
+
+// TestRetryBudget_ClosesOnSuccess 验证成功后熔断器关闭
+func TestRetryBudget_ClosesOnSuccess(t *testing.T) {
+	b := NewRetryBudget(2, 10*time.Millisecond)
+	b.RecordFailure()
+	b.RecordFailure()
+	if !b.IsOpen() {
+		t.Fatal("expected circuit open")
+	}
+	time.Sleep(15 * time.Millisecond)
+	b.RecordSuccess()
+	if b.IsOpen() {
+		t.Error("expected circuit closed after success")
+	}
+}
+
+// TestRedactArgs_PIIKeywords 验证 PII 字段脱敏(R13)
+//
+// 已知限制:本实现启发式扫描 ? 占位符前文本,不做完整 SQL 解析。
+// 在 INSERT (col1, col2) VALUES (?, ?) 这种"列名+值同窗口"情况下,
+// 首个 ? 也会被脱敏(过保守 — 安全优先)。WHERE 子句 / SET 子句 等值绑定场景精确。
+func TestRedactArgs_PIIKeywords(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		args    []any
+		wantRed []bool
+	}{
+		{
+			"WHERE password binding",
+			"SELECT * FROM users WHERE password = ?",
+			[]any{"secret123"},
+			[]bool{true},
+		},
+		{
+			"SET token binding",
+			"UPDATE sessions SET token = ? WHERE id = ?",
+			[]any{"tok_abc", 1},
+			[]bool{true, false},
+		},
+		{
+			"no PII columns",
+			"SELECT * FROM users WHERE id = ? AND name = ?",
+			[]any{1, "alice"},
+			[]bool{false, false},
+		},
+		{
+			"all PII",
+			"SELECT * FROM users WHERE email = ? AND token = ?",
+			[]any{"a@b.com", "tok_abc"},
+			[]bool{true, true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactArgs(tt.query, tt.args)
+			for i, want := range tt.wantRed {
+				s, ok := got[i].(string)
+				isRedacted := ok && len(s) >= 10 && s[:9] == "<redacted"
+				if want && !isRedacted {
+					t.Errorf("idx %d: expected redacted, got %v", i, got[i])
+				}
+				if !want && isRedacted {
+					t.Errorf("idx %d: expected not redacted, got %v", i, got[i])
+				}
+			}
+		})
+	}
+}
+
+// TestHistogram_Observe 验证 R13 直方图桶分配
+func TestHistogram_Observe(t *testing.T) {
+	resetQueryDurationHistogram()
+	defer resetQueryDurationHistogram()
+
+	queryDuration.observe(2 * time.Millisecond)  // 落在 5ms 桶
+	queryDuration.observe(80 * time.Millisecond) // 落在 100ms 桶
+	queryDuration.observe(8 * time.Second)       // 超过最大桶(60s),不进桶只进 sum/count
+
+	buckets, sumNS, count := queryDuration.snapshot()
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	if sumNS <= 0 {
+		t.Error("sumNS should be > 0")
+	}
+	// 5ms 桶应 >= 1(2ms 落入)
+	if buckets[1] < 1 {
+		t.Errorf("5ms bucket = %d, want >= 1", buckets[1])
+	}
+	// 100ms 桶应 >= 1(80ms 落入)
+	if buckets[4] < 1 {
+		t.Errorf("100ms bucket = %d, want >= 1", buckets[4])
 	}
 }

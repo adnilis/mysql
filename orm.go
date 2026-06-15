@@ -12,6 +12,7 @@ import (
 // logQ 内部助手：组装 "[OP] query" 前缀，统一通过 LogQuery 落盘
 // 调用方传入 op 形如 "INSERT" / "UPDATE" / "DELETE" / "EXEC" / "COUNT" / "EXISTS"
 // R06:同步更新内存级指标(query / affected)
+// R13:同时记录到 query duration 直方图
 func (p *MySQLPlugin) logQ(ctx context.Context, op, query string, duration time.Duration, rows int64, args ...any) {
 	if p.queryLogger != nil {
 		p.queryLogger.LogQuery(ctx, "["+op+"] "+query, duration, rows, args...)
@@ -27,6 +28,8 @@ func (p *MySQLPlugin) logQ(ctx context.Context, op, query string, duration time.
 	if ql := p.queryLogger; ql != nil && ql.slowEnabled && ql.config.SlowThreshold() > 0 && duration.Milliseconds() >= ql.config.SlowThreshold() {
 		p.metricQuerySlow.Add(1)
 	}
+	// R13:每次 query 记入直方图(无论 op)
+	queryDuration.observe(duration)
 }
 
 // Begin 开启事务

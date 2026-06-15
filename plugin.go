@@ -39,6 +39,12 @@ type MySQLPlugin struct {
 
 	// R11-perf:StatsJSON 100ms 短 TTL 缓存,避免高频轮询反复 marshal
 	statsCache *statsCacheEntry
+
+	// R12:admin 端点鉴权 token(空字符串=无鉴权)
+	adminAuthToken string
+
+	// R12+:admin 端点令牌桶限流(nil=不限流)
+	adminRateLimiter *adminRateLimiter
 }
 
 // mysqlPluginState 插件状态枚举

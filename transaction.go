@@ -179,3 +179,46 @@ func (p *MySQLPlugin) RunInTransaction(ctx context.Context, fn func(tx *MySQLTra
 
 	return fn(tx)
 }
+
+// WithMockTx 事务测试 helper(R12)
+//
+// 在测试场景中,既想要"事务生命周期由 fn 控制"的便利,又不想每次手写
+// mock.ExpectBegin / mock.ExpectCommit / mock.ExpectRollback 一堆样板。
+//
+// 典型用法:
+//
+//	mock.ExpectBegin()
+//	mock.ExpectExec("INSERT INTO users").WillReturnResult(...)
+//	mock.ExpectCommit()
+//	err := plugin.WithMockTx(ctx, func(tx *MySQLTransaction) error {
+//	    _, err := tx.Exec(ctx, "INSERT INTO users ...", ...)
+//	    return err
+//	})
+//
+// 行为契约:
+//   - fn 成功 → 自动 Commit
+//   - fn 返回 error → 自动 Rollback
+//   - fn panic → 自动 Rollback 后重新 panic
+//
+// 注:本函数与 RunInTransaction 等价,但参数签名更短(只接收 fn tx,无 ctx);
+// 适合测试场景。生产代码仍推荐 RunInTransaction 以获得 WithRetry 集成路径。
+func (p *MySQLPlugin) WithMockTx(ctx context.Context, fn func(tx *MySQLTransaction) error) (err error) {
+	tx, beginErr := p.Begin()
+	if beginErr != nil {
+		return beginErr
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback(context.Background())
+			panic(r)
+		}
+		if err != nil {
+			_ = tx.Rollback(context.Background())
+			return
+		}
+		err = tx.Commit(context.Background())
+	}()
+
+	return fn(tx)
+}
